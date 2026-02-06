@@ -307,7 +307,9 @@ func (s *Session) Do(ctx context.Context, req *http.Request, v any) (*http.Respo
 			continue
 		}
 
-		return resp, fmt.Errorf("presto server error: %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp, fmt.Errorf("presto server error: %d: %s", resp.StatusCode, string(body))
 	}
 	return nil, fmt.Errorf("max retries exceeded")
 }

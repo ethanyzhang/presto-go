@@ -172,6 +172,25 @@ func TestDo_RetryAndState(t *testing.T) {
 	assert.Empty(t, s.transactionId)
 }
 
+func TestDo_ErrorResponseBodyClosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte("invalid query syntax"))
+	}))
+	defer srv.Close()
+
+	c, _ := NewClient(srv.URL)
+	s := c.NewSession()
+
+	req, _ := s.NewRequest("GET", "/", nil)
+	resp, err := s.Do(context.Background(), req, nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "400")
+	assert.Contains(t, err.Error(), "invalid query syntax")
+	assert.NotNil(t, resp)
+}
+
 // --- Segment 5: Decode & Decompression ---
 
 func TestDecodeResponseBody_Corners(t *testing.T) {
