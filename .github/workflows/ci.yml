@@ -30,6 +30,31 @@ jobs:
       - name: Run tests
         run: go test ./... -v -race -count=1
 
+  test-submodules:
+    name: Test Submodules (Go ${{ matrix.go-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ["1.24", "1.25"]
+        module:
+          - prestoauth/kerberos
+          - prestoauth/oauth2
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Download dependencies
+        working-directory: ${{ matrix.module }}
+        run: go mod download
+
+      - name: Run tests
+        working-directory: ${{ matrix.module }}
+        run: go test ./... -v -race -count=1
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
@@ -88,6 +113,31 @@ jobs:
         with:
           version: "latest"
 
+  vuln:
+    name: Vulnerability Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck (core)
+        run: govulncheck ./...
+
+      - name: Run govulncheck (kerberos)
+        working-directory: prestoauth/kerberos
+        run: govulncheck ./...
+
+      - name: Run govulncheck (oauth2)
+        working-directory: prestoauth/oauth2
+        run: govulncheck ./...
+
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -106,3 +156,13 @@ jobs:
         run: |
           go mod tidy
           git diff --exit-code go.mod go.sum
+
+      - name: Verify submodule go.mod is tidy
+        run: |
+          for mod in prestoauth/kerberos prestoauth/oauth2; do
+            echo "Checking $mod..."
+            cd "$mod"
+            go mod tidy
+            git diff --exit-code go.mod go.sum
+            cd "$GITHUB_WORKSPACE"
+          done
