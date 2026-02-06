@@ -2,6 +2,7 @@ package presto_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -102,6 +103,33 @@ func TestQueryResults_DrainSuccess(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 5, rowCount)
 	assert.Empty(t, results.Data, "Data should be cleared after Drain completes")
+}
+
+// TestQueryResults_DrainHandlerError verifies Drain stops and returns error when handler fails.
+func TestQueryResults_DrainHandlerError(t *testing.T) {
+	mockServer := prestotest.NewMockPrestoServer()
+	defer mockServer.Close()
+
+	client, _ := presto.NewClient(mockServer.URL(), "")
+	session := client.NewSession()
+
+	mockServer.AddQuery(&prestotest.MockQueryTemplate{
+		SQL:         "SELECT * FROM fail_drain",
+		Data:        [][]any{{1}, {2}, {3}},
+		DataBatches: 2,
+	})
+
+	results, _, _ := session.Query(context.Background(), "SELECT * FROM fail_drain")
+
+	handlerErr := errors.New("handler failed")
+	err := results.Drain(context.Background(), func(qr *presto.QueryResults) error {
+		return handlerErr
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, handlerErr)
+	assert.Contains(t, err.Error(), "batch handler returned error")
+	assert.Nil(t, results.Data, "Data should be cleared on handler error")
 }
 
 // TestQueryResults_ContextCancellation verifies server-side cleanup on client timeout.
