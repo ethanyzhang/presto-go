@@ -4,6 +4,7 @@ A Go client library for [Presto](https://prestodb.io/) and [Trino](https://trino
 
 ## Features
 
+- **`database/sql` driver** — use the standard Go database API (`sql.Open`, `db.Query`, `rows.Scan`)
 - Full Presto/Trino REST API support (query, fetch, cancel)
 - Trino compatibility mode (automatic header translation)
 - Session management with isolated, cloneable sessions
@@ -23,6 +24,45 @@ go get github.com/ethanyzhang/presto-go
 
 ## Quick Start
 
+### Using `database/sql` (recommended)
+
+```go
+package main
+
+import (
+	"database/sql"
+	"fmt"
+	"log"
+
+	_ "github.com/ethanyzhang/presto-go" // registers "presto" driver
+)
+
+func main() {
+	db, err := sql.Open("presto", "presto://localhost:8080/hive/default")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	rows, err := db.Query("SELECT id, name FROM users WHERE active = ?", true)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id int64
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(id, name)
+	}
+}
+```
+
+### Using the low-level API
+
 ```go
 package main
 
@@ -36,24 +76,20 @@ import (
 )
 
 func main() {
-	// Create a client
 	client, err := presto.NewClient("http://localhost:8080")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Configure session
 	session := client.NewSession()
 	session.Catalog("hive").Schema("default").User("analyst")
 
-	// Execute a query
 	ctx := context.Background()
 	results, _, err := session.Query(ctx, "SELECT id, name FROM users LIMIT 10")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Process all result batches
 	err = results.Drain(ctx, func(qr *presto.QueryResults) error {
 		for _, row := range qr.Data {
 			var parsed []any
@@ -69,6 +105,51 @@ func main() {
 ```
 
 ## Usage
+
+### `database/sql` Driver
+
+#### DSN Format
+
+```
+presto://[user[:password]@]host[:port][/catalog[/schema]][?key=value&...]
+trino://...   (enables Trino header mode)
+```
+
+Default port is 8080 for both schemes. Query parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| `timezone` | Session time zone |
+| `client_tags` | Comma-separated tags |
+| `client_info` | Client info string |
+| `source` | Query source identifier |
+| *(other)* | Set as session properties |
+
+#### Using `sql.OpenDB` with a Connector
+
+```go
+connector, err := presto.NewConnector("presto://user@host:8080/hive/default")
+if err != nil {
+    log.Fatal(err)
+}
+db := sql.OpenDB(connector)
+```
+
+#### Parameter Interpolation
+
+The driver interpolates `?` placeholders client-side into SQL literals:
+
+```go
+rows, err := db.Query("SELECT * FROM t WHERE name = ? AND id = ?", "alice", 42)
+```
+
+#### Transactions
+
+```go
+tx, err := db.BeginTx(ctx, nil)
+// ... use tx.Query / tx.Exec ...
+tx.Commit() // or tx.Rollback()
+```
 
 ### Client Initialization
 
@@ -184,28 +265,6 @@ func TestMyApp(t *testing.T) {
     results, _, err := session.Query(context.Background(), "SELECT * FROM users")
     // Assert on results...
 }
-```
-
-## Architecture
-
-```
-presto-go/
-├── client.go                  # Client and Session types, HTTP transport, headers
-├── query.go                   # Query, FetchNextBatch, CancelQuery methods
-├── query_results.go           # QueryResults with batch iteration and Drain
-├── query_error.go             # Server-side error types
-├── error_response.go          # HTTP-level error response
-├── column.go                  # Column metadata
-├── client_type_signature.go   # Type signature metadata
-├── statement_stats.go         # Query execution statistics
-├── stage_stats.go             # Per-stage statistics
-├── runtime_stats.go           # Runtime metrics
-├── runtime_unit.go            # Metric unit enumeration
-├── warning.go                 # Query warnings
-├── prestotest/
-│   └── mock_server.go         # Mock Presto/Trino server for testing
-└── utils/
-    └── bi_map.go              # Generic bidirectional map
 ```
 
 ## License

@@ -1,0 +1,374 @@
+package presto
+
+import (
+	"database/sql/driver"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestParseDSN(t *testing.T) {
+	tests := []struct {
+		name    string
+		dsn     string
+		wantErr bool
+		check   func(t *testing.T, cfg *dsnConfig)
+	}{
+		{
+			name: "basic presto",
+			dsn:  "presto://localhost:8080/hive/default",
+			check: func(t *testing.T, cfg *dsnConfig) {
+				assert.Equal(t, "localhost", cfg.host)
+				assert.Equal(t, "8080", cfg.port)
+				assert.Equal(t, "hive", cfg.catalog)
+				assert.Equal(t, "default", cfg.schema)
+				assert.False(t, cfg.isTrino)
+			},
+		},
+		{
+			name: "trino with defaults",
+			dsn:  "trino://trino-host/catalog",
+			check: func(t *testing.T, cfg *dsnConfig) {
+				assert.Equal(t, "trino-host", cfg.host)
+				assert.Equal(t, "8080", cfg.port)
+				assert.Equal(t, "catalog", cfg.catalog)
+				assert.Empty(t, cfg.schema)
+				assert.True(t, cfg.isTrino)
+			},
+		},
+		{
+			name: "user and password",
+			dsn:  "presto://admin:secret@host:9090/cat/sch",
+			check: func(t *testing.T, cfg *dsnConfig) {
+				assert.Equal(t, "admin", cfg.user)
+				assert.Equal(t, "secret", cfg.password)
+				assert.Equal(t, "host", cfg.host)
+				assert.Equal(t, "9090", cfg.port)
+			},
+		},
+		{
+			name: "default port for presto",
+			dsn:  "presto://localhost",
+			check: func(t *testing.T, cfg *dsnConfig) {
+				assert.Equal(t, "8080", cfg.port)
+			},
+		},
+		{
+			name: "query params",
+			dsn:  "presto://localhost/cat?timezone=US/Eastern&client_tags=a,b,c&client_info=myinfo&source=myapp&custom=val",
+			check: func(t *testing.T, cfg *dsnConfig) {
+				assert.Equal(t, "US/Eastern", cfg.timezone)
+				assert.Equal(t, []string{"a", "b", "c"}, cfg.clientTags)
+				assert.Equal(t, "myinfo", cfg.clientInfo)
+				assert.Equal(t, "myapp", cfg.source)
+				assert.Equal(t, "val", cfg.sessionProps["custom"])
+			},
+		},
+		{
+			name:    "unsupported scheme",
+			dsn:     "mysql://localhost/db",
+			wantErr: true,
+		},
+		{
+			name:    "missing host",
+			dsn:     "presto:///catalog",
+			wantErr: true,
+		},
+		{
+			name: "no path",
+			dsn:  "presto://host:1234",
+			check: func(t *testing.T, cfg *dsnConfig) {
+				assert.Empty(t, cfg.catalog)
+				assert.Empty(t, cfg.schema)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := parseDSN(tt.dsn)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			if tt.check != nil {
+				tt.check(t, cfg)
+			}
+		})
+	}
+}
+
+func TestValueToSQL(t *testing.T) {
+	tests := []struct {
+		name string
+		val  driver.Value
+		want string
+	}{
+		{"nil", nil, "NULL"},
+		{"int64", int64(42), "42"},
+		{"negative int64", int64(-100), "-100"},
+		{"float64", float64(3.14), "3.14"},
+		{"bool true", true, "TRUE"},
+		{"bool false", false, "FALSE"},
+		{"string", "hello", "'hello'"},
+		{"string with quote", "it's", "'it''s'"},
+		{"empty string", "", "''"},
+		{"bytes", []byte{0xDE, 0xAD, 0xBE, 0xEF}, "X'deadbeef'"},
+		{"empty bytes", []byte{}, "X''"},
+		{"time", time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC), "TIMESTAMP '2024-01-15 10:30:00.000'"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := valueToSQL(tt.val)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+
+	t.Run("unsupported type", func(t *testing.T) {
+		_, err := valueToSQL(struct{}{})
+		assert.Error(t, err)
+	})
+}
+
+func TestInterpolateParams(t *testing.T) {
+	tests := []struct {
+		name    string
+		query   string
+		args    []driver.Value
+		want    string
+		wantErr bool
+	}{
+		{
+			name:  "no args",
+			query: "SELECT 1",
+			args:  nil,
+			want:  "SELECT 1",
+		},
+		{
+			name:  "single placeholder",
+			query: "SELECT ?",
+			args:  []driver.Value{int64(42)},
+			want:  "SELECT 42",
+		},
+		{
+			name:  "multiple placeholders",
+			query: "SELECT ?, ?, ?",
+			args:  []driver.Value{int64(1), "hello", true},
+			want:  "SELECT 1, 'hello', TRUE",
+		},
+		{
+			name:  "skip ? in string literal",
+			query: "SELECT * FROM t WHERE name = 'what?' AND id = ?",
+			args:  []driver.Value{int64(1)},
+			want:  "SELECT * FROM t WHERE name = 'what?' AND id = 1",
+		},
+		{
+			name:  "escaped quotes in string literal",
+			query: "SELECT * FROM t WHERE name = 'it''s ?' AND id = ?",
+			args:  []driver.Value{int64(1)},
+			want:  "SELECT * FROM t WHERE name = 'it''s ?' AND id = 1",
+		},
+		{
+			name:    "too few args",
+			query:   "SELECT ?, ?",
+			args:    []driver.Value{int64(1)},
+			wantErr: true,
+		},
+		{
+			name:    "too many args",
+			query:   "SELECT ?",
+			args:    []driver.Value{int64(1), int64(2)},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := interpolateParams(tt.query, tt.args)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestNormalizeType(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"varchar(255)", "varchar"},
+		{"VARCHAR(255)", "varchar"},
+		{"decimal(10,2)", "decimal"},
+		{"bigint", "bigint"},
+		{"BIGINT", "bigint"},
+		{"timestamp with time zone", "timestamp with time zone"},
+		{"TIMESTAMP WITH TIME ZONE", "timestamp with time zone"},
+		{"time with time zone", "time with time zone"},
+		{"array(varchar)", "array"},
+		{"map(varchar,integer)", "map"},
+		{"  varchar(100)  ", "varchar"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			assert.Equal(t, tt.want, normalizeType(tt.input))
+		})
+	}
+}
+
+func TestConvertValue(t *testing.T) {
+	tests := []struct {
+		name       string
+		val        any
+		prestoType string
+		want       driver.Value
+	}{
+		{"nil", nil, "varchar", nil},
+		{"bigint", float64(42), "bigint", int64(42)},
+		{"integer", float64(10), "integer", int64(10)},
+		{"smallint", float64(5), "smallint", int64(5)},
+		{"tinyint", float64(1), "tinyint", int64(1)},
+		{"double", float64(3.14), "double", float64(3.14)},
+		{"real", float64(2.5), "real", float64(2.5)},
+		{"boolean true", true, "boolean", true},
+		{"boolean false", false, "boolean", false},
+		{"varchar", "hello", "varchar", "hello"},
+		{"char", "x", "char", "x"},
+		{"decimal from float", float64(19.99), "decimal(10,2)", "19.99"},
+		{"decimal from string", "123.456", "decimal", "123.456"},
+		{"date", "2024-01-15", "date", time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)},
+		{"timestamp", "2024-01-15 10:30:00.000", "timestamp", time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)},
+		{"varbinary", "hello", "varbinary", []byte("hello")},
+		{"array", []any{1.0, 2.0}, "array(integer)", "[1,2]"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := convertValue(tt.val, tt.prestoType)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+
+	t.Run("error cases", func(t *testing.T) {
+		_, err := convertValue("not a number", "bigint")
+		assert.Error(t, err)
+
+		_, err = convertValue("not a number", "double")
+		assert.Error(t, err)
+
+		_, err = convertValue("not a bool", "boolean")
+		assert.Error(t, err)
+
+		_, err = convertValue(42, "date")
+		assert.Error(t, err)
+
+		_, err = convertValue(42, "timestamp")
+		assert.Error(t, err)
+
+		_, err = convertValue(42, "timestamp with time zone")
+		assert.Error(t, err)
+
+		_, err = convertValue(42, "varbinary")
+		assert.Error(t, err)
+	})
+}
+
+func TestScanTypeForPrestoType(t *testing.T) {
+	tests := []struct {
+		prestoType string
+		want       reflect.Type
+	}{
+		{"bigint", reflect.TypeOf(int64(0))},
+		{"integer", reflect.TypeOf(int64(0))},
+		{"smallint", reflect.TypeOf(int64(0))},
+		{"tinyint", reflect.TypeOf(int64(0))},
+		{"double", reflect.TypeOf(float64(0))},
+		{"real", reflect.TypeOf(float64(0))},
+		{"boolean", reflect.TypeOf(false)},
+		{"varchar", reflect.TypeOf("")},
+		{"varchar(255)", reflect.TypeOf("")},
+		{"char", reflect.TypeOf("")},
+		{"decimal", reflect.TypeOf("")},
+		{"json", reflect.TypeOf("")},
+		{"varbinary", reflect.TypeOf([]byte(nil))},
+		{"date", reflect.TypeOf(time.Time{})},
+		{"timestamp", reflect.TypeOf(time.Time{})},
+		{"timestamp with time zone", reflect.TypeOf(time.Time{})},
+		{"array(integer)", reflect.TypeOf("")},
+		{"map(varchar,integer)", reflect.TypeOf("")},
+		{"unknown_type", reflect.TypeOf("")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.prestoType, func(t *testing.T) {
+			assert.Equal(t, tt.want, scanTypeForPrestoType(tt.prestoType))
+		})
+	}
+}
+
+func TestDsnConfig_ServerURL(t *testing.T) {
+	t.Run("presto", func(t *testing.T) {
+		cfg := &dsnConfig{host: "localhost", port: "8080"}
+		assert.Equal(t, "http://localhost:8080", cfg.serverURL())
+	})
+
+	t.Run("trino", func(t *testing.T) {
+		cfg := &dsnConfig{host: "trino-host", port: "8080", isTrino: true}
+		assert.Equal(t, "http://trino-host:8080", cfg.serverURL())
+	})
+}
+
+func TestParseTimestamp(t *testing.T) {
+	tests := []struct {
+		input string
+		want  time.Time
+	}{
+		{"2024-01-15 10:30:00.000", time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)},
+		{"2024-01-15 10:30:00", time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)},
+		{"2024-01-15 10:30:00.000000", time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := parseTimestamp(tt.input)
+			require.NoError(t, err)
+			assert.True(t, tt.want.Equal(got))
+		})
+	}
+
+	t.Run("invalid", func(t *testing.T) {
+		_, err := parseTimestamp("not a timestamp")
+		assert.Error(t, err)
+	})
+}
+
+func TestParseTimestampWithTZ(t *testing.T) {
+	t.Run("offset format", func(t *testing.T) {
+		got, err := parseTimestampWithTZ("2024-01-15 10:30:00.000 +00:00")
+		require.NoError(t, err)
+		assert.Equal(t, 2024, got.Year())
+		assert.Equal(t, 10, got.Hour())
+	})
+
+	t.Run("named zone", func(t *testing.T) {
+		got, err := parseTimestampWithTZ("2024-01-15 10:30:00.000 UTC")
+		require.NoError(t, err)
+		assert.Equal(t, 10, got.Hour())
+	})
+
+	t.Run("invalid", func(t *testing.T) {
+		_, err := parseTimestampWithTZ("not valid")
+		assert.Error(t, err)
+	})
+}
