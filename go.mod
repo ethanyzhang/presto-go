@@ -1,4 +1,4 @@
-module presto-go
+module github.com/ethanyzhang/presto-go
 
 go 1.25
 

@@ -15,7 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"presto-go"
+	"github.com/ethanyzhang/presto-go"
 )
 
 // --- Data Models ---

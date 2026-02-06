@@ -305,7 +305,7 @@ func TestSession_Concurrency(t *testing.T) {
 	var wg sync.WaitGroup
 	const count = 50
 
-	for i := 0; i < count; i++ {
+	for i := range count {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()

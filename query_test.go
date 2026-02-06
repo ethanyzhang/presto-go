@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"presto-go"
-	"presto-go/prestotest"
+	"github.com/ethanyzhang/presto-go"
+	"github.com/ethanyzhang/presto-go/prestotest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"strings"
@@ -99,9 +100,7 @@ func (s *Session) Clone() *Session {
 	defer s.mu.RUnlock()
 
 	params := make(map[string]any, len(s.sessionParams))
-	for k, v := range s.sessionParams {
-		params[k] = v
-	}
+	maps.Copy(params, s.sessionParams)
 
 	tags := make([]string, len(s.clientTags))
 	copy(tags, s.clientTags)
