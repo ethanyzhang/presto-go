@@ -24,13 +24,6 @@ func (e *ErrorResponse) Error() string {
 
 // NewErrorResponse creates a new ErrorResponse from an HTTP response.
 // It reads the response body and closes it.
-//
-// Parameters:
-//   - resp: The HTTP response containing an error
-//
-// Returns:
-//   - An ErrorResponse wrapping the HTTP response
-//   - An error if reading the response body fails
 func NewErrorResponse(resp *http.Response) error {
 	defer resp.Body.Close()
 	bytes, err := io.ReadAll(resp.Body)

@@ -250,6 +250,36 @@ func TestDo_ErrorResponseBodyClosed(t *testing.T) {
 	assert.NotNil(t, resp)
 }
 
+func TestNewErrorResponse(t *testing.T) {
+	t.Run("Reads body and formats error", func(t *testing.T) {
+		resp := &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Body:       io.NopCloser(strings.NewReader("bad SQL syntax")),
+		}
+		err := NewErrorResponse(resp)
+		require.Error(t, err)
+
+		var errResp *ErrorResponse
+		require.ErrorAs(t, err, &errResp)
+		assert.Equal(t, "bad SQL syntax", errResp.Message)
+		assert.Equal(t, http.StatusBadRequest, errResp.Response.StatusCode)
+		assert.Equal(t, "bad SQL syntax (status code: 400)", err.Error())
+	})
+
+	t.Run("Empty body", func(t *testing.T) {
+		resp := &http.Response{
+			StatusCode: http.StatusInternalServerError,
+			Body:       io.NopCloser(strings.NewReader("")),
+		}
+		err := NewErrorResponse(resp)
+		require.Error(t, err)
+
+		var errResp *ErrorResponse
+		require.ErrorAs(t, err, &errResp)
+		assert.Empty(t, errResp.Message)
+	})
+}
+
 // --- Segment 5: Decode & Decompression ---
 
 func TestDecodeResponseBody_Corners(t *testing.T) {
