@@ -1,4 +1,4 @@
-package prestotest_test
+package presto_test
 
 import (
 	"context"

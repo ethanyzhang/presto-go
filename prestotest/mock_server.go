@@ -13,8 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/ethanyzhang/presto-go"
 )
 
@@ -90,7 +88,6 @@ type MockActiveQuery struct {
 // MockPrestoServer simulates a Presto/Trino coordinator for integration testing.
 type MockPrestoServer struct {
 	server *httptest.Server
-	engine *gin.Engine
 
 	// templates maps SQL strings to their pre-validated MockQueryTemplate blueprints.
 	templates map[string]*MockQueryTemplate
@@ -107,40 +104,31 @@ type MockPrestoServer struct {
 	today          string // Cached date string for optimized ID generation.
 }
 
-// NewMockPrestoServer initializes a new mock server using the Gin framework.
+// NewMockPrestoServer initializes a new mock server using the standard library.
 func NewMockPrestoServer() *MockPrestoServer {
-	gin.SetMode(gin.TestMode)
-
 	mock := &MockPrestoServer{
-		engine:        gin.New(),
 		templates:     make(map[string]*MockQueryTemplate),
 		activeQueries: make(map[string]*MockActiveQuery),
 		today:         time.Now().Format("20060102"),
 	}
 
-	mock.queryIDCounter.Store(0)
-	mock.setupRoutes()
-	mock.server = httptest.NewServer(mock.engine)
+	mux := http.NewServeMux()
+
+	// POST /v1/statement: Initiates a new query with a server-generated ID.
+	mux.HandleFunc("POST /v1/statement", mock.handleNewQuery)
+
+	// PUT /v1/statement/{queryId}: Initiates a query with a client-provided ID.
+	mux.HandleFunc("PUT /v1/statement/{queryId}", mock.handleQueryWithPreMintedID)
+
+	// GET /v1/statement/{status}/{queryId}/{batchId}: Polls for the next data batch.
+	mux.HandleFunc("GET /v1/statement/{status}/{queryId}/{batchId}", mock.handleFetchNextBatch)
+
+	// DELETE /v1/statement/{status}/{queryId}/{batchId}: Cancels a running query.
+	mux.HandleFunc("DELETE /v1/statement/{status}/{queryId}/{batchId}", mock.handleCancelQuery)
+
+	mock.server = httptest.NewServer(mux)
 
 	return mock
-}
-
-// setupRoutes configures the standard Presto/Trino REST API endpoints.
-func (m *MockPrestoServer) setupRoutes() {
-	v1 := m.engine.Group("/v1")
-	{
-		// POST /v1/statement: Initiates a new query with a server-generated ID.
-		v1.POST("/statement", m.handleNewQuery)
-
-		// PUT /v1/statement/:queryId: Initiates a query with a client-provided ID.
-		v1.PUT("/statement/:queryId", m.handleQueryWithPreMintedID)
-
-		// GET /v1/statement/:status/:queryId/:batchId: Polls for the next data batch.
-		v1.GET("/statement/:status/:queryId/:batchId", m.handleFetchNextBatch)
-
-		// DELETE /v1/statement/:status/:queryId/:batchId: Cancels a running query.
-		v1.DELETE("/statement/:status/:queryId/:batchId", m.handleCancelQuery)
-	}
 }
 
 // AddQuery registers a SQL template and pre-calculates the valid DataBatches.
@@ -166,18 +154,18 @@ func (m *MockPrestoServer) SetDefaultLatency(latency time.Duration) {
 // --- Request Handlers ---
 
 // handleNewQuery is a specialized caller for the internal logic using a server-generated ID.
-func (m *MockPrestoServer) handleNewQuery(c *gin.Context) {
-	m.handleQueryWithPreMintedIDInternal(c, m.newQueryID())
+func (m *MockPrestoServer) handleNewQuery(w http.ResponseWriter, r *http.Request) {
+	m.handleQueryInternal(w, r, m.newQueryID())
 }
 
 // handleQueryWithPreMintedID initiates a query using the ID provided in the URL.
-func (m *MockPrestoServer) handleQueryWithPreMintedID(c *gin.Context) {
-	m.handleQueryWithPreMintedIDInternal(c, c.Param("queryId"))
+func (m *MockPrestoServer) handleQueryWithPreMintedID(w http.ResponseWriter, r *http.Request) {
+	m.handleQueryInternal(w, r, r.PathValue("queryId"))
 }
 
-// handleQueryWithPreMintedIDInternal manages SQL matching and MockActiveQuery instantiation.
-func (m *MockPrestoServer) handleQueryWithPreMintedIDInternal(c *gin.Context, queryID string) {
-	body, _ := io.ReadAll(c.Request.Body)
+// handleQueryInternal manages SQL matching and MockActiveQuery instantiation.
+func (m *MockPrestoServer) handleQueryInternal(w http.ResponseWriter, r *http.Request, queryID string) {
+	body, _ := io.ReadAll(r.Body)
 	sql := string(body)
 
 	m.queriesMutex.RLock()
@@ -202,33 +190,40 @@ func (m *MockPrestoServer) handleQueryWithPreMintedIDInternal(c *gin.Context, qu
 	}
 	m.queriesMutex.Unlock()
 
-	m.sendQueryResponse(c, queryID, 0)
+	m.sendQueryResponse(w, queryID, 0)
 }
 
-func (m *MockPrestoServer) handleFetchNextBatch(c *gin.Context) {
-	batchID, _ := strconv.Atoi(c.Param("batchId"))
-	m.sendQueryResponse(c, c.Param("queryId"), batchID)
+func (m *MockPrestoServer) handleFetchNextBatch(w http.ResponseWriter, r *http.Request) {
+	batchID, _ := strconv.Atoi(r.PathValue("batchId"))
+	m.sendQueryResponse(w, r.PathValue("queryId"), batchID)
 }
 
-func (m *MockPrestoServer) handleCancelQuery(c *gin.Context) {
-	id := c.Param("queryId")
+func (m *MockPrestoServer) handleCancelQuery(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("queryId")
 	m.queriesMutex.Lock()
 	if q, ok := m.activeQueries[id]; ok {
 		q.State = QueryStateCancelled
 	}
 	m.queriesMutex.Unlock()
-	m.sendQueryResponse(c, id, 0)
+	m.sendQueryResponse(w, id, 0)
 }
 
 // --- Protocol Response Logic ---
 
+// writeJSON encodes v as JSON and writes it to the response with the given status code.
+func writeJSON(w http.ResponseWriter, statusCode int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
 // sendQueryResponse prepares a JSON payload and applies hierarchical latency.
-func (m *MockPrestoServer) sendQueryResponse(c *gin.Context, queryID string, batchID int) {
+func (m *MockPrestoServer) sendQueryResponse(w http.ResponseWriter, queryID string, batchID int) {
 	m.queriesMutex.RLock()
 	query, exists := m.activeQueries[queryID]
 	if !exists {
 		m.queriesMutex.RUnlock()
-		c.JSON(http.StatusNotFound, gin.H{"error": "Query not found"})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Query not found"})
 		return
 	}
 
@@ -253,7 +248,7 @@ func (m *MockPrestoServer) sendQueryResponse(c *gin.Context, queryID string, bat
 	query, exists = m.activeQueries[queryID]
 	if !exists {
 		m.queriesMutex.Unlock()
-		c.JSON(http.StatusNotFound, gin.H{"error": "Query removed during processing"})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Query removed during processing"})
 		return
 	}
 	defer m.queriesMutex.Unlock()
@@ -318,7 +313,7 @@ func (m *MockPrestoServer) sendQueryResponse(c *gin.Context, queryID string, bat
 		delete(m.activeQueries, queryID)
 	}
 
-	c.JSON(http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (m *MockPrestoServer) newQueryID() string {

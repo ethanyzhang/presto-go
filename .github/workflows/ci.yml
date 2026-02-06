@@ -25,14 +25,10 @@ jobs:
           go-version: ${{ matrix.go-version }}
 
       - name: Download dependencies
-        run: |
-          go mod download
-          cd prestotest && go mod download
+        run: go mod download
 
       - name: Run tests
-        run: |
-          go test ./... -v -race -count=1
-          cd prestotest && go test -v -race -count=1
+        run: go test ./... -v -race -count=1
 
   coverage:
     name: Coverage
@@ -46,9 +42,7 @@ jobs:
           go-version: "1.25"
 
       - name: Run tests with coverage
-        run: |
-          go test ./... -coverprofile=coverage.out -covermode=atomic
-          cd prestotest && go test -coverprofile=coverage.out -covermode=atomic
+        run: go test ./... -coverprofile=coverage.out -covermode=atomic -coverpkg=github.com/ethanyzhang/presto-go,github.com/ethanyzhang/presto-go/utils
 
       - name: Check coverage threshold
         run: |
@@ -78,9 +72,7 @@ jobs:
           go-version: "1.25"
 
       - name: Run go vet
-        run: |
-          go vet ./...
-          cd prestotest && go vet ./...
+        run: go vet ./...
 
       - name: Check formatting
         run: |
@@ -108,13 +100,9 @@ jobs:
           go-version: "1.25"
 
       - name: Build
-        run: |
-          go build ./...
-          cd prestotest && go build ./...
+        run: go build ./...
 
       - name: Verify go.mod is tidy
         run: |
           go mod tidy
           git diff --exit-code go.mod go.sum
-          cd prestotest && go mod tidy
-          git diff --exit-code prestotest/go.mod prestotest/go.sum

@@ -159,7 +159,7 @@ go test ./... -v
 
 ### Mock Server
 
-The `prestotest` package provides a `MockPrestoServer` for integration testing. It is a separate package so the `gin` dependency is not pulled into production builds.
+The `prestotest` package provides a `MockPrestoServer` for integration testing. It uses only the standard library (`net/http`), so it introduces no additional dependencies.
 
 ```go
 import (
