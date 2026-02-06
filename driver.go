@@ -377,25 +377,42 @@ func (d *prestoDriver) OpenConnector(dsn string) (driver.Connector, error) {
 
 // --- Connector ---
 
+// ConnectorOption configures a prestoConnector.
+type ConnectorOption func(*prestoConnector)
+
+// WithSessionSetup registers a hook that is called on every new Session created
+// by the connector's Connect method. This allows external modules (e.g., Kerberos
+// auth) to configure sessions without modifying the core driver.
+func WithSessionSetup(fn func(*Session)) ConnectorOption {
+	return func(c *prestoConnector) {
+		c.sessionSetup = fn
+	}
+}
+
 // prestoConnector implements driver.Connector. It creates a shared Client
 // (via sync.Once) and produces new Sessions for each Connect call.
 type prestoConnector struct {
-	cfg    *dsnConfig
-	client *Client
-	once   sync.Once
-	err    error
+	cfg          *dsnConfig
+	client       *Client
+	once         sync.Once
+	err          error
+	sessionSetup func(*Session)
 }
 
 var _ driver.Connector = (*prestoConnector)(nil)
 
 // NewConnector creates a new driver.Connector from a DSN string.
 // Use this with sql.OpenDB for connection pool management.
-func NewConnector(dsn string) (driver.Connector, error) {
+func NewConnector(dsn string, opts ...ConnectorOption) (driver.Connector, error) {
 	cfg, err := parseDSN(dsn)
 	if err != nil {
 		return nil, err
 	}
-	return &prestoConnector{cfg: cfg}, nil
+	c := &prestoConnector{cfg: cfg}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c, nil
 }
 
 // Connect implements driver.Connector.
@@ -440,6 +457,10 @@ func (c *prestoConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	}
 	for k, v := range c.cfg.sessionProps {
 		session.SessionParam(k, v)
+	}
+
+	if c.sessionSetup != nil {
+		c.sessionSetup(session)
 	}
 
 	return &prestoConn{session: session}, nil

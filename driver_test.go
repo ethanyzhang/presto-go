@@ -3,6 +3,7 @@ package presto_test
 import (
 	"context"
 	"database/sql"
+	"net/http"
 	"reflect"
 	"testing"
 	"time"
@@ -574,6 +575,37 @@ func TestDriver_QueuedBatches(t *testing.T) {
 	require.NoError(t, rows.Err())
 
 	assert.Equal(t, []int64{1, 2, 3}, nums)
+}
+
+func TestWithSessionSetup(t *testing.T) {
+	mock := prestotest.NewMockPrestoServer()
+	defer mock.Close()
+
+	mock.AddQuery(&prestotest.MockQueryTemplate{
+		SQL:         "SELECT 1",
+		Columns:     []presto.Column{{Name: "result", Type: "integer"}},
+		Data:        [][]any{{1}},
+		DataBatches: 1,
+	})
+
+	host := mock.URL()[len("http://"):]
+	setupCalled := false
+	connector, err := presto.NewConnector("presto://"+host, presto.WithSessionSetup(func(s *presto.Session) {
+		setupCalled = true
+		s.RequestOptions(func(r *http.Request) {
+			r.Header.Set("X-Test-Auth", "kerberos-token")
+		})
+	}))
+	require.NoError(t, err)
+
+	db := sql.OpenDB(connector)
+	defer db.Close()
+
+	var result int64
+	err = db.QueryRowContext(context.Background(), "SELECT 1").Scan(&result)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), result)
+	assert.True(t, setupCalled, "sessionSetup should have been called")
 }
 
 // ============================================================

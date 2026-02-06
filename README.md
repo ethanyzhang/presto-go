@@ -15,11 +15,18 @@ A Go client library for [Presto](https://prestodb.io/) and [Trino](https://trino
 - Thread-safe concurrent session access
 - Fluent API for session configuration
 - Pre-minted query ID support
+- Kerberos/SPNEGO authentication (opt-in separate module)
 
 ## Installation
 
 ```bash
 go get github.com/ethanyzhang/presto-go
+```
+
+For Kerberos/SPNEGO authentication:
+
+```bash
+go get github.com/ethanyzhang/presto-go/prestoauth/kerberos
 ```
 
 ## Quick Start
@@ -230,6 +237,93 @@ opt := func(r *http.Request) {
     r.Header.Set("X-Custom-Header", "value")
 }
 results, _, err := session.Query(ctx, "SELECT 1", opt)
+```
+
+### Persistent Request Options
+
+Set request options that apply to every request from a session, including batch fetches. This is essential for authentication schemes like Kerberos/SPNEGO:
+
+```go
+session.RequestOptions(func(r *http.Request) {
+    r.Header.Set("Authorization", "Bearer my-token")
+})
+results, _, err := session.Query(ctx, "SELECT 1") // header applied
+// header also applied to all FetchNextBatch calls
+```
+
+Per-call options override session-level options when both set the same header.
+
+### Kerberos/SPNEGO Authentication
+
+The `prestoauth/kerberos` module provides Kerberos authentication as a separate module to keep the `gokrb5` dependency tree opt-in.
+
+#### Using `database/sql`
+
+```go
+import (
+    "database/sql"
+    "github.com/ethanyzhang/presto-go/prestoauth/kerberos"
+)
+
+connector, closer, err := kerberos.NewConnector(
+    "presto://host:8080/catalog/schema?kerberos_keytab=/etc/presto.keytab&kerberos_principal=user@REALM&kerberos_realm=REALM&kerberos_config=/etc/krb5.conf",
+)
+if err != nil {
+    log.Fatal(err)
+}
+defer closer.Close()
+
+db := sql.OpenDB(connector)
+db.Query("SELECT 1") // SPNEGO header applied to all requests
+```
+
+DSN parameters for Kerberos:
+
+| Parameter | Description |
+|-----------|-------------|
+| `kerberos_keytab` | Path to the `.keytab` file |
+| `kerberos_principal` | Kerberos principal (e.g. `user@EXAMPLE.COM`) |
+| `kerberos_realm` | Kerberos realm (e.g. `EXAMPLE.COM`) |
+| `kerberos_config` | Path to `krb5.conf` |
+| `kerberos_service_spn` | Service principal name (defaults to `HTTP/<hostname>`) |
+
+#### Using the low-level API
+
+```go
+import (
+    "github.com/ethanyzhang/presto-go"
+    "github.com/ethanyzhang/presto-go/prestoauth/kerberos"
+)
+
+client, _ := presto.NewClient("http://presto:8080")
+session := client.NewSession()
+
+krbOpt, closer, err := kerberos.NewRequestOption(kerberos.Config{
+    KeytabPath: "/etc/presto.keytab",
+    Principal:  "presto/host@EXAMPLE.COM",
+    Realm:      "EXAMPLE.COM",
+    ConfigPath: "/etc/krb5.conf",
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer closer.Close()
+
+session.RequestOptions(krbOpt)
+results, _, _ := session.Query(ctx, "SELECT 1") // SPNEGO header applied
+```
+
+### Connector Options
+
+`NewConnector` accepts variadic options for configuring sessions created by the connector:
+
+```go
+connector, err := presto.NewConnector("presto://host:8080/hive/default",
+    presto.WithSessionSetup(func(s *presto.Session) {
+        s.RequestOptions(myAuthOption)
+    }),
+)
+db := sql.OpenDB(connector)
 ```
 
 ## Testing

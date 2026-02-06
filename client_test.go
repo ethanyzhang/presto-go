@@ -414,7 +414,54 @@ func TestDecodeResponseBody_Corners(t *testing.T) {
 	})
 }
 
-// --- Segment 6: Concurrency Safety ---
+// --- Segment 6: Persistent RequestOptions ---
+
+func TestSession_RequestOptions(t *testing.T) {
+	c, _ := NewClient("http://localhost")
+	s := c.NewSession()
+
+	opt := func(r *http.Request) { r.Header.Set("Authorization", "Negotiate abc") }
+	s.RequestOptions(opt)
+
+	req, err := s.NewRequest("GET", "/", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "Negotiate abc", req.Header.Get("Authorization"))
+}
+
+func TestSession_RequestOptions_PerCallOverride(t *testing.T) {
+	c, _ := NewClient("http://localhost")
+	s := c.NewSession()
+
+	sessionOpt := func(r *http.Request) { r.Header.Set("X-Custom", "session") }
+	s.RequestOptions(sessionOpt)
+
+	callOpt := func(r *http.Request) { r.Header.Set("X-Custom", "call") }
+	req, err := s.NewRequest("GET", "/", nil, callOpt)
+	require.NoError(t, err)
+	assert.Equal(t, "call", req.Header.Get("X-Custom"), "per-call options should override session-level")
+}
+
+func TestSession_RequestOptions_ClonePreserved(t *testing.T) {
+	c, _ := NewClient("http://localhost")
+	s := c.NewSession()
+
+	opt := func(r *http.Request) { r.Header.Set("Authorization", "Negotiate xyz") }
+	s.RequestOptions(opt)
+
+	cloned := s.Clone()
+
+	// Cloned session should retain the request option
+	req, err := cloned.NewRequest("GET", "/", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "Negotiate xyz", req.Header.Get("Authorization"))
+
+	// Modifying cloned session's options should not affect original
+	cloned.RequestOptions()
+	origReq, _ := s.NewRequest("GET", "/", nil)
+	assert.Equal(t, "Negotiate xyz", origReq.Header.Get("Authorization"))
+}
+
+// --- Segment 7: Concurrency Safety ---
 
 func TestSession_Concurrency(t *testing.T) {
 	c, _ := NewClient("http://localhost")

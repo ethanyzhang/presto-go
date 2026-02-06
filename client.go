@@ -43,16 +43,17 @@ type RequestOption func(*http.Request)
 
 // Session represents an isolated execution context linked to a Presto client
 type Session struct {
-	client        *Client // Link to the parent client for network transport
-	userInfo      *url.Userinfo
-	basicAuth     string
-	catalog       string
-	schema        string
-	timezone      string
-	clientInfo    string
-	transactionId string
-	sessionParams map[string]any
-	clientTags    []string
+	client         *Client // Link to the parent client for network transport
+	userInfo       *url.Userinfo
+	basicAuth      string
+	catalog        string
+	schema         string
+	timezone       string
+	clientInfo     string
+	transactionId  string
+	sessionParams  map[string]any
+	clientTags     []string
+	requestOptions []RequestOption
 
 	// mu protects session state during concurrent access
 	mu sync.RWMutex
@@ -107,17 +108,21 @@ func (s *Session) Clone() *Session {
 	tags := make([]string, len(s.clientTags))
 	copy(tags, s.clientTags)
 
+	opts := make([]RequestOption, len(s.requestOptions))
+	copy(opts, s.requestOptions)
+
 	return &Session{
-		client:        s.client, // Maintain the same network client
-		userInfo:      s.userInfo,
-		basicAuth:     s.basicAuth,
-		catalog:       s.catalog,
-		schema:        s.schema,
-		timezone:      s.timezone,
-		clientInfo:    s.clientInfo,
-		transactionId: s.transactionId,
-		sessionParams: params,
-		clientTags:    tags,
+		client:         s.client, // Maintain the same network client
+		userInfo:       s.userInfo,
+		basicAuth:      s.basicAuth,
+		catalog:        s.catalog,
+		schema:         s.schema,
+		timezone:       s.timezone,
+		clientInfo:     s.clientInfo,
+		transactionId:  s.transactionId,
+		sessionParams:  params,
+		clientTags:     tags,
+		requestOptions: opts,
 	}
 }
 
@@ -198,6 +203,16 @@ func (s *Session) AppendClientTag(tag string) *Session {
 	return s
 }
 
+// RequestOptions sets persistent request options that are applied to every
+// request made by this session. This is useful for authentication schemes
+// (e.g., Kerberos/SPNEGO) that must apply to all requests including batch fetches.
+func (s *Session) RequestOptions(opts ...RequestOption) *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.requestOptions = opts
+	return s
+}
+
 // --- Request Lifecycle (No Client argument needed) ---
 
 // NewRequest builds an http.Request using internal session and client states, accepting optional overrides.
@@ -224,7 +239,13 @@ func (s *Session) NewRequest(method, urlStr string, body any, options ...Request
 	}
 	req.Header.Set("Accept-Encoding", ContentEncodingGzip)
 
-	// Apply functional options for specific request overrides
+	// Apply session-level options first, then per-call overrides
+	s.mu.RLock()
+	sessionOpts := s.requestOptions
+	s.mu.RUnlock()
+	for _, opt := range sessionOpts {
+		opt(req)
+	}
 	for _, opt := range options {
 		opt(req)
 	}
