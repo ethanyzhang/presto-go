@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 )
 
 // requestQueryResults executes an HTTP request and processes the response as a QueryResults object.
@@ -89,7 +90,7 @@ func (s *Session) QueryWithPreMintedID(ctx context.Context, query, queryId, slug
 		return s.Query(ctx, query, opts...)
 	}
 	req, err := s.NewRequest("PUT",
-		fmt.Sprintf("v1/statement/%s?slug=%s", queryId, slug), query, opts...)
+		fmt.Sprintf("v1/statement/%s?slug=%s", url.PathEscape(queryId), url.QueryEscape(slug)), query, opts...)
 	if err != nil {
 		return nil, nil, err
 	}

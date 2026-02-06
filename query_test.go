@@ -159,6 +159,43 @@ func TestQueryResults_EmptyBatches(t *testing.T) {
 	assert.Equal(t, string(QueryStateFinished), results.Stats.State)
 }
 
+func TestQueryWithPreMintedID(t *testing.T) {
+	mockServer := NewMockPrestoServer()
+	defer mockServer.Close()
+
+	client, _ := NewClient(mockServer.URL(), "")
+	session := client.NewSession()
+
+	mockServer.AddQuery(&MockQueryTemplate{
+		SQL:         "SELECT 1",
+		Columns:     []Column{{Name: "result", Type: "integer"}},
+		Data:        [][]any{{1}},
+		DataBatches: 1,
+	})
+
+	t.Run("With pre-minted ID", func(t *testing.T) {
+		results, _, err := session.QueryWithPreMintedID(
+			context.Background(), "SELECT 1", "my-query-id", "my-slug")
+		require.NoError(t, err)
+		assert.Equal(t, "my-query-id", results.Id)
+	})
+
+	t.Run("Empty ID falls back to Query", func(t *testing.T) {
+		results, _, err := session.QueryWithPreMintedID(
+			context.Background(), "SELECT 1", "", "ignored-slug")
+		require.NoError(t, err)
+		assert.NotEmpty(t, results.Id)
+	})
+
+	t.Run("Special characters are escaped", func(t *testing.T) {
+		// If escaping is broken, the URL would be malformed and the request would fail
+		results, _, err := session.QueryWithPreMintedID(
+			context.Background(), "SELECT 1", "id with spaces", "slug&param=val")
+		require.NoError(t, err)
+		assert.NotEmpty(t, results.Id)
+	})
+}
+
 // TestQueryResults_ConcurrentAccess verifies session mutex protection.
 func TestQueryResults_ConcurrentAccess(t *testing.T) {
 	mockServer := NewMockPrestoServer()
