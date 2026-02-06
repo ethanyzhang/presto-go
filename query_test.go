@@ -30,7 +30,15 @@ func TestMockServer_BatchCapping(t *testing.T) {
 	mockServer.AddQuery(tmpl)
 	assert.Equal(t, 3, tmpl.DataBatches, "DataBatches should be capped at row count")
 
-	// Case 2: Zero data
+	// Case 2: DataBatches defaults to 1 when data exists but DataBatches is 0
+	tmplDefault := &prestotest.MockQueryTemplate{
+		SQL:  "SELECT * FROM defaulted",
+		Data: [][]any{{1}, {2}},
+	}
+	mockServer.AddQuery(tmplDefault)
+	assert.Equal(t, 1, tmplDefault.DataBatches, "DataBatches should default to 1 when data exists")
+
+	// Case 3: Zero data
 	tmplEmpty := &prestotest.MockQueryTemplate{
 		SQL:         "SELECT * FROM empty",
 		Data:        [][]any{},

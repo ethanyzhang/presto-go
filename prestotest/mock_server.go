@@ -136,7 +136,10 @@ func (m *MockPrestoServer) AddQuery(tmpl *MockQueryTemplate) {
 	m.queriesMutex.Lock()
 	defer m.queriesMutex.Unlock()
 
-	if totalRows := len(tmpl.Data); totalRows < tmpl.DataBatches {
+	totalRows := len(tmpl.Data)
+	if tmpl.DataBatches == 0 && totalRows > 0 {
+		tmpl.DataBatches = 1
+	} else if totalRows < tmpl.DataBatches {
 		tmpl.DataBatches = totalRows
 	}
 	if tmpl.QueueBatches < 1 {
