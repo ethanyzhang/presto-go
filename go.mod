@@ -1,6 +1,6 @@
 module github.com/ethanyzhang/presto-go
 
-go 1.25
+go 1.25.7
 
 require (
 	github.com/rs/zerolog v1.34.0

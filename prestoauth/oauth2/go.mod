@@ -1,6 +1,6 @@
 module github.com/ethanyzhang/presto-go/prestoauth/oauth2
 
-go 1.25
+go 1.25.7
 
 require (
 	github.com/ethanyzhang/presto-go v0.0.0
