@@ -29,6 +29,34 @@ func TestParseDSN(t *testing.T) {
 			},
 		},
 		{
+			name: "TLS params",
+			dsn:  "presto://localhost:8443/hive?ssl_cert=/path/cert.pem&ssl_key=/path/key.pem&ssl_ca=/path/ca.pem&ssl_skip_verify=true",
+			check: func(t *testing.T, cfg *dsnConfig) {
+				assert.Equal(t, "/path/cert.pem", cfg.sslCert)
+				assert.Equal(t, "/path/key.pem", cfg.sslKey)
+				assert.Equal(t, "/path/ca.pem", cfg.sslCA)
+				assert.True(t, cfg.sslSkipVerify)
+				assert.True(t, cfg.hasTLS())
+				assert.Equal(t, "https://localhost:8443", cfg.serverURL())
+			},
+		},
+		{
+			name: "ssl_skip_verify=1",
+			dsn:  "presto://localhost?ssl_skip_verify=1",
+			check: func(t *testing.T, cfg *dsnConfig) {
+				assert.True(t, cfg.sslSkipVerify)
+				assert.True(t, cfg.hasTLS())
+			},
+		},
+		{
+			name: "no TLS",
+			dsn:  "presto://localhost:8080",
+			check: func(t *testing.T, cfg *dsnConfig) {
+				assert.False(t, cfg.hasTLS())
+				assert.Equal(t, "http://localhost:8080", cfg.serverURL())
+			},
+		},
+		{
 			name: "trino with defaults",
 			dsn:  "trino://trino-host/catalog",
 			check: func(t *testing.T, cfg *dsnConfig) {
@@ -326,6 +354,42 @@ func TestDsnConfig_ServerURL(t *testing.T) {
 	t.Run("trino", func(t *testing.T) {
 		cfg := &dsnConfig{host: "trino-host", port: "8080", isTrino: true}
 		assert.Equal(t, "http://trino-host:8080", cfg.serverURL())
+	})
+
+	t.Run("TLS upgrades to HTTPS", func(t *testing.T) {
+		cfg := &dsnConfig{host: "localhost", port: "8443", sslCA: "/path/ca.pem"}
+		assert.Equal(t, "https://localhost:8443", cfg.serverURL())
+	})
+}
+
+func TestBuildTLSConfig(t *testing.T) {
+	t.Run("no TLS returns nil", func(t *testing.T) {
+		cfg := &dsnConfig{host: "localhost", port: "8080"}
+		tlsCfg, err := cfg.buildTLSConfig()
+		require.NoError(t, err)
+		assert.Nil(t, tlsCfg)
+	})
+
+	t.Run("skip verify only", func(t *testing.T) {
+		cfg := &dsnConfig{host: "localhost", port: "8080", sslSkipVerify: true}
+		tlsCfg, err := cfg.buildTLSConfig()
+		require.NoError(t, err)
+		require.NotNil(t, tlsCfg)
+		assert.True(t, tlsCfg.InsecureSkipVerify)
+	})
+
+	t.Run("bad CA file", func(t *testing.T) {
+		cfg := &dsnConfig{host: "localhost", port: "8080", sslCA: "/nonexistent/ca.pem"}
+		_, err := cfg.buildTLSConfig()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to read CA certificate")
+	})
+
+	t.Run("bad client cert", func(t *testing.T) {
+		cfg := &dsnConfig{host: "localhost", port: "8080", sslCert: "/nonexistent/cert.pem", sslKey: "/nonexistent/key.pem"}
+		_, err := cfg.buildTLSConfig()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to load client certificate")
 	})
 }
 

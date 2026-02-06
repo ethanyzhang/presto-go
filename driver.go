@@ -2,13 +2,17 @@ package presto
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"database/sql/driver"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -35,6 +39,11 @@ type dsnConfig struct {
 	clientTags []string
 	clientInfo string
 	source     string
+	// TLS settings
+	sslCert       string
+	sslKey        string
+	sslCA         string
+	sslSkipVerify bool
 	// Unrecognized query params become session properties.
 	sessionProps map[string]string
 }
@@ -106,6 +115,14 @@ func parseDSN(dsn string) (*dsnConfig, error) {
 			cfg.clientInfo = val
 		case "source":
 			cfg.source = val
+		case "ssl_cert":
+			cfg.sslCert = val
+		case "ssl_key":
+			cfg.sslKey = val
+		case "ssl_ca":
+			cfg.sslCA = val
+		case "ssl_skip_verify":
+			cfg.sslSkipVerify = val == "true" || val == "1"
 		default:
 			cfg.sessionProps[key] = val
 		}
@@ -116,7 +133,51 @@ func parseDSN(dsn string) (*dsnConfig, error) {
 
 // serverURL returns the base HTTP URL for the Presto/Trino server.
 func (cfg *dsnConfig) serverURL() string {
-	return fmt.Sprintf("http://%s:%s", cfg.host, cfg.port)
+	scheme := "http"
+	if cfg.hasTLS() {
+		scheme = "https"
+	}
+	return fmt.Sprintf("%s://%s:%s", scheme, cfg.host, cfg.port)
+}
+
+// hasTLS returns true if any TLS-related DSN parameter is set.
+func (cfg *dsnConfig) hasTLS() bool {
+	return cfg.sslCert != "" || cfg.sslCA != "" || cfg.sslSkipVerify
+}
+
+// buildTLSConfig constructs a *tls.Config from DSN parameters.
+func (cfg *dsnConfig) buildTLSConfig() (*tls.Config, error) {
+	if !cfg.hasTLS() {
+		return nil, nil
+	}
+
+	tlsCfg := &tls.Config{
+		InsecureSkipVerify: cfg.sslSkipVerify,
+	}
+
+	// Load client certificate for mutual TLS
+	if cfg.sslCert != "" && cfg.sslKey != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.sslCert, cfg.sslKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load client certificate: %w", err)
+		}
+		tlsCfg.Certificates = []tls.Certificate{cert}
+	}
+
+	// Load custom CA certificate
+	if cfg.sslCA != "" {
+		caCert, err := os.ReadFile(cfg.sslCA)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA certificate: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("failed to parse CA certificate from %s", cfg.sslCA)
+		}
+		tlsCfg.RootCAs = pool
+	}
+
+	return tlsCfg, nil
 }
 
 // --- Parameter Interpolation ---
@@ -389,11 +450,21 @@ func WithSessionSetup(fn func(*Session)) ConnectorOption {
 	}
 }
 
+// WithHTTPClient provides a custom http.Client to the connector. Use this for
+// advanced TLS configuration, custom transports, or proxy settings that cannot
+// be expressed through DSN parameters.
+func WithHTTPClient(hc *http.Client) ConnectorOption {
+	return func(c *prestoConnector) {
+		c.httpClient = hc
+	}
+}
+
 // prestoConnector implements driver.Connector. It creates a shared Client
 // (via sync.Once) and produces new Sessions for each Connect call.
 type prestoConnector struct {
 	cfg          *dsnConfig
 	client       *Client
+	httpClient   *http.Client
 	once         sync.Once
 	err          error
 	sessionSetup func(*Session)
@@ -423,6 +494,21 @@ func (c *prestoConnector) Connect(ctx context.Context) (driver.Conn, error) {
 			return
 		}
 		c.client.isTrino = c.cfg.isTrino
+
+		// Apply TLS configuration from DSN parameters
+		tlsCfg, err := c.cfg.buildTLSConfig()
+		if err != nil {
+			c.err = err
+			return
+		}
+		if tlsCfg != nil {
+			c.client.TLSConfig(tlsCfg)
+		}
+
+		// Apply custom HTTP client if provided via connector option
+		if c.httpClient != nil {
+			c.client.HTTPClient(c.httpClient)
+		}
 	})
 	if c.err != nil {
 		return nil, c.err

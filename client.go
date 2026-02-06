@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -403,6 +404,30 @@ func (c *Client) IsTrino(isTrino bool) *Client {
 
 func (c *Client) ForceHTTPS(force bool) *Client {
 	c.forceHTTPS = force
+	return c
+}
+
+// HTTPClient replaces the underlying http.Client. Use this to provide a
+// client with custom TLS configuration, timeouts, or transport settings.
+func (c *Client) HTTPClient(hc *http.Client) *Client {
+	c.httpClient = hc
+	return c
+}
+
+// TLSConfig configures TLS on the client's HTTP transport. If the client
+// already has a custom transport that is not an *http.Transport, this is
+// a no-op and the caller should use HTTPClient instead.
+func (c *Client) TLSConfig(cfg *tls.Config) *Client {
+	transport, ok := c.httpClient.Transport.(*http.Transport)
+	if !ok {
+		if c.httpClient.Transport == nil {
+			transport = http.DefaultTransport.(*http.Transport).Clone()
+		} else {
+			return c
+		}
+	}
+	transport.TLSClientConfig = cfg
+	c.httpClient.Transport = transport
 	return c
 }
 

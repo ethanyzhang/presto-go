@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -461,7 +462,26 @@ func TestSession_RequestOptions_ClonePreserved(t *testing.T) {
 	assert.Equal(t, "Negotiate xyz", origReq.Header.Get("Authorization"))
 }
 
-// --- Segment 7: Concurrency Safety ---
+// --- Segment 7: TLS Configuration ---
+
+func TestClient_TLSConfig(t *testing.T) {
+	c, _ := NewClient("http://localhost")
+	tlsCfg := &tls.Config{InsecureSkipVerify: true}
+	c.TLSConfig(tlsCfg)
+
+	transport, ok := c.httpClient.Transport.(*http.Transport)
+	require.True(t, ok)
+	assert.Equal(t, tlsCfg, transport.TLSClientConfig)
+}
+
+func TestClient_HTTPClient(t *testing.T) {
+	c, _ := NewClient("http://localhost")
+	custom := &http.Client{Timeout: 42}
+	c.HTTPClient(custom)
+	assert.Equal(t, custom, c.httpClient)
+}
+
+// --- Segment 8: Concurrency Safety ---
 
 func TestSession_Concurrency(t *testing.T) {
 	c, _ := NewClient("http://localhost")
