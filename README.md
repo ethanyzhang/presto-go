@@ -15,7 +15,10 @@ A Go client library for [Presto](https://prestodb.io/) and [Trino](https://trino
 - Thread-safe concurrent session access
 - Fluent API for session configuration
 - Pre-minted query ID support
+- TLS/SSL with custom CAs and mutual TLS
 - Kerberos/SPNEGO authentication (opt-in separate module)
+- OAuth2/JWT authentication (opt-in separate module)
+- Generic complex type scanners (`NullSlice[T]`, `NullMap[K,V]`, `NullRow[T]`)
 
 ## Installation
 
@@ -23,10 +26,11 @@ A Go client library for [Presto](https://prestodb.io/) and [Trino](https://trino
 go get github.com/ethanyzhang/presto-go
 ```
 
-For Kerberos/SPNEGO authentication:
+Optional authentication modules (separate dependencies, opt-in):
 
 ```bash
-go get github.com/ethanyzhang/presto-go/prestoauth/kerberos
+go get github.com/ethanyzhang/presto-go/prestoauth/kerberos  # Kerberos/SPNEGO
+go get github.com/ethanyzhang/presto-go/prestoauth/oauth2    # OAuth2/JWT
 ```
 
 ## Quick Start
@@ -130,7 +134,13 @@ Default port is 8080 for both schemes. Query parameters:
 | `client_tags` | Comma-separated tags |
 | `client_info` | Client info string |
 | `source` | Query source identifier |
+| `ssl_cert` | Path to client certificate (PEM) for mutual TLS |
+| `ssl_key` | Path to client private key (PEM) |
+| `ssl_ca` | Path to CA certificate (PEM) for custom CAs |
+| `ssl_skip_verify` | Skip TLS certificate verification (`true`/`1`) |
 | *(other)* | Set as session properties |
+
+When any `ssl_*` parameter is set, the connection automatically upgrades to HTTPS.
 
 #### Using `sql.OpenDB` with a Connector
 
@@ -170,6 +180,39 @@ client, err := presto.NewClient("http://presto-coordinator:8080", "base64-encode
 // Trino mode with HTTPS
 client, err := presto.NewClient("http://trino-coordinator:8443")
 client.IsTrino(true).ForceHTTPS(true)
+```
+
+### TLS Configuration
+
+#### Via DSN (database/sql)
+
+```go
+db, _ := sql.Open("presto", "presto://host:8443/catalog?ssl_ca=/path/ca.pem")
+// or with mutual TLS:
+db, _ := sql.Open("presto", "presto://host:8443/catalog?ssl_cert=/path/cert.pem&ssl_key=/path/key.pem&ssl_ca=/path/ca.pem")
+// or skip verification (development only):
+db, _ := sql.Open("presto", "presto://host:8443/catalog?ssl_skip_verify=true")
+```
+
+#### Via low-level API
+
+```go
+client, _ := presto.NewClient("https://presto:8443")
+client.TLSConfig(&tls.Config{
+    RootCAs: caCertPool,
+})
+// or provide a fully custom http.Client:
+client.HTTPClient(&http.Client{
+    Transport: &http.Transport{TLSClientConfig: tlsConfig},
+})
+```
+
+#### Via Connector Options
+
+```go
+connector, _ := presto.NewConnector("presto://host:8443/catalog",
+    presto.WithHTTPClient(customHTTPClient),
+)
 ```
 
 ### Session Management
@@ -313,6 +356,81 @@ session.RequestOptions(krbOpt)
 results, _, _ := session.Query(ctx, "SELECT 1") // SPNEGO header applied
 ```
 
+### OAuth2/JWT Authentication
+
+The `prestoauth/oauth2` module provides token-based authentication as a separate module.
+
+#### Static Bearer Token
+
+```go
+import "github.com/ethanyzhang/presto-go/prestoauth/oauth2"
+
+// Via DSN
+connector, _ := oauth2.NewConnector("presto://host:8080/catalog?access_token=my-jwt-token")
+db := sql.OpenDB(connector)
+
+// Via low-level API
+session.RequestOptions(oauth2.NewStaticTokenOption("my-jwt-token"))
+```
+
+#### OAuth2 Client Credentials Flow
+
+Tokens are automatically obtained and refreshed:
+
+```go
+// Via DSN
+connector, _ := oauth2.NewConnector(
+    "presto://host:8080/catalog?oauth2_client_id=id&oauth2_client_secret=secret&oauth2_token_url=https://auth.example.com/token&oauth2_scopes=read,write",
+)
+db := sql.OpenDB(connector)
+
+// Via low-level API
+opt, _ := oauth2.NewRequestOption(oauth2.Config{
+    ClientID:     "my-client",
+    ClientSecret: "my-secret",
+    TokenURL:     "https://auth.example.com/token",
+    Scopes:       []string{"read", "write"},
+})
+session.RequestOptions(opt)
+```
+
+DSN parameters for OAuth2:
+
+| Parameter | Description |
+|-----------|-------------|
+| `access_token` | Static Bearer token |
+| `oauth2_client_id` | OAuth2 client ID |
+| `oauth2_client_secret` | OAuth2 client secret |
+| `oauth2_token_url` | Token endpoint URL |
+| `oauth2_scopes` | Comma-separated scopes |
+
+### Complex Type Scanning
+
+Presto `ARRAY`, `MAP`, and `ROW` columns are returned as JSON strings through `database/sql`. Use the provided generic scanner types to deserialize them:
+
+```go
+// ARRAY columns
+var tags presto.NullSlice[string]
+row.Scan(&tags)
+fmt.Println(tags.Slice) // []string{"go", "presto"}
+
+// MAP columns
+var props presto.NullMap[string, float64]
+row.Scan(&props)
+fmt.Println(props.Map) // map[string]float64{"timeout": 30}
+
+// ROW columns (scan into a struct)
+type Address struct {
+    Street string `json:"street"`
+    City   string `json:"city"`
+}
+var addr presto.NullRow[Address]
+row.Scan(&addr)
+fmt.Println(addr.Row.Street) // "123 Main St"
+```
+
+All three types are nullable (`Valid` field), implement `sql.Scanner` and `driver.Valuer`, and support any JSON-compatible type parameter.
+
 ### Connector Options
 
 `NewConnector` accepts variadic options for configuring sessions created by the connector:
@@ -322,6 +440,7 @@ connector, err := presto.NewConnector("presto://host:8080/hive/default",
     presto.WithSessionSetup(func(s *presto.Session) {
         s.RequestOptions(myAuthOption)
     }),
+    presto.WithHTTPClient(customHTTPClient),
 )
 db := sql.OpenDB(connector)
 ```

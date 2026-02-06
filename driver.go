@@ -64,14 +64,13 @@ func parseDSN(dsn string) (*dsnConfig, error) {
 
 	cfg := &dsnConfig{
 		sessionProps: make(map[string]string),
+		port:         "8080",
 	}
 
 	switch u.Scheme {
 	case "presto":
-		cfg.port = "8080"
 	case "trino":
 		cfg.isTrino = true
-		cfg.port = "8080"
 	default:
 		return nil, fmt.Errorf("unsupported scheme %q: must be presto or trino", u.Scheme)
 	}
