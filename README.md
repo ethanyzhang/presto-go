@@ -9,7 +9,7 @@ A Go client library for [Presto](https://prestodb.io/) and [Trino](https://trino
 - Session management with isolated, cloneable sessions
 - Transaction state tracking (automatic via response headers)
 - Batch result streaming with memory-efficient `Drain` API
-- Automatic retry with exponential backoff on 503 responses
+- Automatic retry with exponential backoff on 503 responses and transient connection errors
 - Gzip request/response compression
 - Thread-safe concurrent session access
 - Fluent API for session configuration
@@ -163,8 +163,8 @@ The `prestotest` package provides a `MockPrestoServer` for integration testing. 
 
 ```go
 import (
-    "presto-go"
-    "presto-go/prestotest"
+    "github.com/ethanyzhang/presto-go"
+    "github.com/ethanyzhang/presto-go/prestotest"
 )
 
 func TestMyApp(t *testing.T) {
@@ -210,4 +210,4 @@ presto-go/
 
 ## License
 
-[Add license here]
+Apache License 2.0. See [LICENSE](LICENSE) for details.

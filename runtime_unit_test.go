@@ -2,7 +2,6 @@ package presto
 
 import (
 	"encoding/json"
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -19,8 +18,7 @@ func TestRuntimeUnit_String(t *testing.T) {
 func TestRuntimeUnit_FmtStringer(t *testing.T) {
 	// Verify it satisfies fmt.Stringer
 	u := RuntimeUnitByte
-	s := fmt.Sprintf("%s", u)
-	assert.Equal(t, "BYTE", s)
+	assert.Equal(t, "BYTE", u.String())
 }
 
 func TestParseRuntimeUnit(t *testing.T) {

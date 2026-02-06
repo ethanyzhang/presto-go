@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -277,6 +278,91 @@ func TestNewErrorResponse(t *testing.T) {
 		var errResp *ErrorResponse
 		require.ErrorAs(t, err, &errResp)
 		assert.Empty(t, errResp.Message)
+	})
+}
+
+// failingRoundTripper simulates transient connection failures before delegating
+// to a real transport.
+type failingRoundTripper struct {
+	failCount int
+	calls     int
+	wrapped   http.RoundTripper
+}
+
+func (f *failingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	f.calls++
+	if f.calls <= f.failCount {
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: fmt.Errorf("connection refused")}
+	}
+	return f.wrapped.RoundTrip(req)
+}
+
+func TestDo_ConnectionErrorRetry(t *testing.T) {
+	t.Run("Retries on connection error then succeeds", func(t *testing.T) {
+		attempts := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			attempts++
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		}))
+		defer srv.Close()
+
+		c, _ := NewClient(srv.URL)
+		s := c.NewSession()
+
+		// Inject a transport that fails 2 times then delegates to the real server
+		c.httpClient.Transport = &failingRoundTripper{
+			failCount: 2,
+			wrapped:   srv.Client().Transport,
+		}
+
+		var res map[string]string
+		req, _ := s.NewRequest("GET", "/", nil)
+		_, err := s.Do(context.Background(), req, &res)
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, attempts, "server should be hit once after 2 transport failures")
+		assert.Equal(t, "ok", res["status"])
+	})
+
+	t.Run("Does not retry on context cancellation", func(t *testing.T) {
+		c, _ := NewClient("http://127.0.0.1:1") // port 1 is never open
+		s := c.NewSession()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // Cancel immediately
+
+		req, _ := s.NewRequest("GET", "/", nil)
+		_, err := s.Do(ctx, req, nil)
+
+		require.Error(t, err)
+		// Should return immediately, NOT "max retries exceeded"
+		assert.NotContains(t, err.Error(), "max retries exceeded")
+	})
+}
+
+func TestIsRetryableNetError(t *testing.T) {
+	t.Run("Context canceled is not retryable", func(t *testing.T) {
+		assert.False(t, isRetryableNetError(context.Canceled))
+	})
+
+	t.Run("Context deadline exceeded is not retryable", func(t *testing.T) {
+		assert.False(t, isRetryableNetError(context.DeadlineExceeded))
+	})
+
+	t.Run("Generic error is not retryable", func(t *testing.T) {
+		assert.False(t, isRetryableNetError(fmt.Errorf("some other error")))
+	})
+
+	t.Run("Net OpError is retryable", func(t *testing.T) {
+		err := &net.OpError{Op: "dial", Net: "tcp", Err: fmt.Errorf("connection refused")}
+		assert.True(t, isRetryableNetError(err))
+	})
+
+	t.Run("Wrapped net error is retryable", func(t *testing.T) {
+		inner := &net.OpError{Op: "dial", Net: "tcp", Err: fmt.Errorf("connection refused")}
+		wrapped := fmt.Errorf("request failed: %w", inner)
+		assert.True(t, isRetryableNetError(wrapped))
 	})
 }
 

@@ -6,8 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"errors"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -294,7 +296,23 @@ func (s *Session) Do(ctx context.Context, req *http.Request, v any) (*http.Respo
 	for attempt := 0; attempt < MaxRetryAttempts; attempt++ {
 		resp, err := s.client.httpClient.Do(req)
 		if err != nil {
-			return nil, err
+			// Retry on transient network errors, but not on context cancellation
+			if !isRetryableNetError(err) {
+				return nil, err
+			}
+
+			log.Debug().Err(err).Int("attempt", attempt+1).Msg("retrying on connection error")
+
+			if req.GetBody != nil {
+				req.Body, _ = req.GetBody()
+			}
+
+			time.Sleep(retryDelay)
+			retryDelay *= 2
+			if retryDelay > MaxRetryDelay {
+				retryDelay = MaxRetryDelay
+			}
+			continue
 		}
 
 		s.updateTransactionState(resp)
@@ -327,6 +345,21 @@ func (s *Session) Do(ctx context.Context, req *http.Request, v any) (*http.Respo
 		return resp, fmt.Errorf("presto server error: %d: %s", resp.StatusCode, string(body))
 	}
 	return nil, fmt.Errorf("max retries exceeded")
+}
+
+// isRetryableNetError returns true for transient network errors that warrant
+// a retry (connection refused, DNS failures, connection reset, network timeouts).
+// Context cancellation and deadline exceeded errors are NOT retried.
+func isRetryableNetError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	var opErr *net.OpError
+	return errors.As(err, &opErr)
 }
 
 func (s *Session) updateTransactionState(resp *http.Response) {
