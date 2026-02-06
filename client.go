@@ -274,9 +274,6 @@ func (s *Session) applyHeaders(req *http.Request) {
 
 // Do executes the request and automatically manages transaction state
 func (s *Session) Do(ctx context.Context, req *http.Request, v any) (*http.Response, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	req = req.WithContext(ctx)
 
 	// Buffer the request body so it can be replayed on retries.

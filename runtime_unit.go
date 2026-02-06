@@ -25,11 +25,12 @@ var runtimeUnitMap = utils.NewBiMap(map[RuntimeUnit]string{
 })
 
 // String returns the string representation of the RuntimeUnit.
-func (u *RuntimeUnit) String() (string, error) {
-	if value, ok := runtimeUnitMap.Lookup(*u); ok {
-		return value, nil
+// For unknown values, it returns the numeric representation.
+func (u RuntimeUnit) String() string {
+	if value, ok := runtimeUnitMap.Lookup(u); ok {
+		return value
 	}
-	return strconv.Itoa(int(*u)), fmt.Errorf("unknown RuntimeUnit %d", int(*u))
+	return strconv.Itoa(int(u))
 }
 
 // ParseRuntimeUnit parses a string into a RuntimeUnit.
@@ -38,14 +39,12 @@ func ParseRuntimeUnit(str string) (RuntimeUnit, error) {
 	if key, ok := runtimeUnitMap.RLookup(str); ok {
 		return key, nil
 	}
-	return RuntimeUnit(0), fmt.Errorf("unknown RuntimeUnit string %s, defaulting to %s",
-		str, runtimeUnitMap.DirectLookup(RuntimeUnit(0)))
+	return RuntimeUnitNone, fmt.Errorf("unknown RuntimeUnit string: %s", str)
 }
 
 // MarshalText implements the encoding.TextMarshaler interface.
-func (u *RuntimeUnit) MarshalText() (text []byte, err error) {
-	str, err := u.String()
-	return []byte(str), err
+func (u RuntimeUnit) MarshalText() ([]byte, error) {
+	return []byte(u.String()), nil
 }
 
 // UnmarshalText implements the encoding.TextUnmarshaler interface.

@@ -7,7 +7,7 @@ type StageStats struct {
 	Done            bool         `json:"done"`
 	Nodes           int          `json:"nodes"`
 	TotalSplits     int          `json:"totalSplits"`
-	QueuesSplits    int          `json:"queuedSplits"`
+	QueuedSplits    int          `json:"queuedSplits"`
 	RunningSplits   int          `json:"runningSplits"`
 	CompletedSplits int          `json:"completedSplits"`
 	CPUTimeMillis   int64        `json:"cpuTimeMillis"`
