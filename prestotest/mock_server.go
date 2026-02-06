@@ -1,4 +1,4 @@
-package presto
+package prestotest
 
 import (
 	"crypto/rand"
@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"presto-go"
 )
 
 // --- Data Models ---
@@ -66,13 +68,13 @@ func generateMockSlug() string {
 //     - start = (batchID - 1) * rowsPerBatch
 //     - end = start + rowsPerBatch.
 type MockQueryTemplate struct {
-	SQL          string        // The SQL query string used for template matching.
-	DataBatches  int           // The number of data splits, capped by row count.
-	QueueBatches int           // The number of batches it is in queue for. It should be at least 1.
-	Columns      []Column      // Metadata describing the result set columns.
-	Data         [][]any       // The full result set partitioned across batches.
-	Error        *QueryError   // Optional error to simulate a query failure.
-	Latency      time.Duration // Latency for the query execution.
+	SQL          string             // The SQL query string used for template matching.
+	DataBatches  int                // The number of data splits, capped by row count.
+	QueueBatches int                // The number of batches it is in queue for. It should be at least 1.
+	Columns      []presto.Column    // Metadata describing the result set columns.
+	Data         [][]any            // The full result set partitioned across batches.
+	Error        *presto.QueryError // Optional error to simulate a query failure.
+	Latency      time.Duration      // Latency for the query execution.
 }
 
 // MockActiveQuery represents a live execution instance of a template.
@@ -187,7 +189,7 @@ func (m *MockPrestoServer) handleQueryWithPreMintedIDInternal(c *gin.Context, qu
 			SQL:          sql,
 			DataBatches:  1,
 			QueueBatches: 1,
-			Columns:      []Column{{Name: "result", Type: "varchar"}},
+			Columns:      []presto.Column{{Name: "result", Type: "varchar"}},
 			Data:         [][]any{{"Query template not found; default success"}},
 		}
 	}
@@ -272,11 +274,11 @@ func (m *MockPrestoServer) sendQueryResponse(c *gin.Context, queryID string, bat
 		query.State = QueryStateFinished
 	}
 
-	resp := QueryResults{
+	resp := presto.QueryResults{
 		Id:      queryID,
 		Columns: query.Template.Columns,
 		Error:   query.Template.Error,
-		Stats: StatementStats{
+		Stats: presto.StatementStats{
 			State:           string(query.State),
 			Scheduled:       true,
 			TotalSplits:     dataBatchCount,
@@ -323,5 +325,8 @@ func (m *MockPrestoServer) newQueryID() string {
 	return fmt.Sprintf("%s_%d", m.today, m.queryIDCounter.Add(1))
 }
 
+// URL returns the base URL of the mock server.
 func (m *MockPrestoServer) URL() string { return m.server.URL }
-func (m *MockPrestoServer) Close()      { m.server.Close() }
+
+// Close shuts down the mock server.
+func (m *MockPrestoServer) Close() { m.server.Close() }

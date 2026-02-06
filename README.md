@@ -1,0 +1,213 @@
+# presto-go
+
+A Go client library for [Presto](https://prestodb.io/) and [Trino](https://trino.io/) SQL query engines.
+
+## Features
+
+- Full Presto/Trino REST API support (query, fetch, cancel)
+- Trino compatibility mode (automatic header translation)
+- Session management with isolated, cloneable sessions
+- Transaction state tracking (automatic via response headers)
+- Batch result streaming with memory-efficient `Drain` API
+- Automatic retry with exponential backoff on 503 responses
+- Gzip request/response compression
+- Thread-safe concurrent session access
+- Fluent API for session configuration
+- Pre-minted query ID support
+
+## Installation
+
+```bash
+go get github.com/ethanyzhang/presto-go
+```
+
+## Quick Start
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+
+	"github.com/ethanyzhang/presto-go"
+)
+
+func main() {
+	// Create a client
+	client, err := presto.NewClient("http://localhost:8080")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Configure session
+	session := client.NewSession()
+	session.Catalog("hive").Schema("default").User("analyst")
+
+	// Execute a query
+	ctx := context.Background()
+	results, _, err := session.Query(ctx, "SELECT id, name FROM users LIMIT 10")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Process all result batches
+	err = results.Drain(ctx, func(qr *presto.QueryResults) error {
+		for _, row := range qr.Data {
+			var parsed []any
+			json.Unmarshal(row, &parsed)
+			fmt.Println(parsed)
+		}
+		return nil
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+## Usage
+
+### Client Initialization
+
+```go
+// Basic client
+client, err := presto.NewClient("http://presto-coordinator:8080")
+
+// With basic auth
+client, err := presto.NewClient("http://presto-coordinator:8080", "base64-encoded-credentials")
+
+// Trino mode with HTTPS
+client, err := presto.NewClient("http://trino-coordinator:8443")
+client.IsTrino(true).ForceHTTPS(true)
+```
+
+### Session Management
+
+Sessions provide isolated execution contexts. Each session maintains its own catalog, schema, user identity, transaction state, and session parameters.
+
+```go
+// Create an isolated session from the client
+session := client.NewSession()
+session.Catalog("hive").Schema("production").User("etl_user")
+
+// Set session parameters
+session.SessionParam("query_max_memory", "2GB")
+session.SessionParam("join_distribution_type", "PARTITIONED")
+
+// Clone a session for parallel workloads
+s2 := session.Clone()
+s2.Schema("staging")
+```
+
+### Query Execution
+
+```go
+// Simple query
+results, _, err := session.Query(ctx, "SELECT * FROM orders WHERE status = 'pending'")
+
+// Query with pre-minted ID (for tracking)
+results, _, err := session.QueryWithPreMintedID(ctx, "SELECT 1", "custom-query-id", "slug")
+
+// Manual batch fetching
+for results.HasMoreBatch() {
+    err := results.FetchNextBatch(ctx)
+    if err != nil {
+        log.Fatal(err)
+    }
+    // Process results.Data
+}
+
+// Streaming drain (memory-efficient for large result sets)
+err = results.Drain(ctx, func(qr *presto.QueryResults) error {
+    // Process each batch; data is cleared after handler returns
+    fmt.Printf("Batch: %d rows\n", len(qr.Data))
+    return nil
+})
+```
+
+### Cancellation
+
+Context cancellation automatically triggers server-side query cleanup:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+results, _, err := session.Query(ctx, "SELECT * FROM large_table")
+// If context times out during FetchNextBatch, the query is canceled on the server
+```
+
+### Request Options
+
+Override individual request settings without modifying the session:
+
+```go
+opt := func(r *http.Request) {
+    r.Header.Set("X-Custom-Header", "value")
+}
+results, _, err := session.Query(ctx, "SELECT 1", opt)
+```
+
+## Testing
+
+```bash
+go test ./... -v
+```
+
+### Mock Server
+
+The `prestotest` package provides a `MockPrestoServer` for integration testing. It is a separate package so the `gin` dependency is not pulled into production builds.
+
+```go
+import (
+    "presto-go"
+    "presto-go/prestotest"
+)
+
+func TestMyApp(t *testing.T) {
+    mock := prestotest.NewMockPrestoServer()
+    defer mock.Close()
+
+    mock.AddQuery(&prestotest.MockQueryTemplate{
+        SQL:         "SELECT * FROM users",
+        Columns:     []presto.Column{{Name: "id", Type: "bigint"}},
+        Data:        [][]any{{1}, {2}, {3}},
+        DataBatches: 2,
+    })
+
+    client, _ := presto.NewClient(mock.URL())
+    session := client.NewSession()
+
+    results, _, err := session.Query(context.Background(), "SELECT * FROM users")
+    // Assert on results...
+}
+```
+
+## Architecture
+
+```
+presto-go/
+├── client.go                  # Client and Session types, HTTP transport, headers
+├── query.go                   # Query, FetchNextBatch, CancelQuery methods
+├── query_results.go           # QueryResults with batch iteration and Drain
+├── query_error.go             # Server-side error types
+├── error_response.go          # HTTP-level error response
+├── column.go                  # Column metadata
+├── client_type_signature.go   # Type signature metadata
+├── statement_stats.go         # Query execution statistics
+├── stage_stats.go             # Per-stage statistics
+├── runtime_stats.go           # Runtime metrics
+├── runtime_unit.go            # Metric unit enumeration
+├── warning.go                 # Query warnings
+├── prestotest/
+│   └── mock_server.go         # Mock Presto/Trino server for testing
+└── utils/
+    └── bi_map.go              # Generic bidirectional map
+```
+
+## License
+
+[Add license here]
