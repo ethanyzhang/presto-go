@@ -11,18 +11,15 @@ permissions:
 
 jobs:
   test:
-    name: Test (Go ${{ matrix.go-version }})
+    name: Test
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.25"]
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: "1.25"
 
       - name: Download dependencies
         run: go mod download
@@ -31,11 +28,10 @@ jobs:
         run: go test ./... -v -race -count=1
 
   test-submodules:
-    name: Test Submodules (Go ${{ matrix.go-version }})
+    name: Test Submodules (${{ matrix.module }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ["1.25"]
         module:
           - prestoauth/kerberos
           - prestoauth/oauth2
@@ -45,7 +41,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: "1.25"
 
       - name: Download dependencies
         working-directory: ${{ matrix.module }}
