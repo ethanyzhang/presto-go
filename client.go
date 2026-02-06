@@ -280,6 +280,20 @@ func (s *Session) Do(ctx context.Context, req *http.Request, v any) (*http.Respo
 	}
 	req = req.WithContext(ctx)
 
+	// Buffer the request body so it can be replayed on retries.
+	// io.Reader is consumed after the first attempt, so we need GetBody.
+	if req.Body != nil && req.GetBody == nil {
+		bodyBytes, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read request body: %w", err)
+		}
+		req.Body.Close()
+		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+		}
+	}
+
 	retryDelay := time.Second
 	for attempt := 0; attempt < MaxRetryAttempts; attempt++ {
 		resp, err := s.client.httpClient.Do(req)
@@ -297,6 +311,11 @@ func (s *Session) Do(ctx context.Context, req *http.Request, v any) (*http.Respo
 		if resp.StatusCode == http.StatusServiceUnavailable {
 			if closeErr := resp.Body.Close(); closeErr != nil {
 				log.Debug().Err(closeErr).Msg("failed to close response body")
+			}
+
+			// Reset the request body for the next attempt
+			if req.GetBody != nil {
+				req.Body, _ = req.GetBody()
 			}
 
 			time.Sleep(retryDelay)

@@ -172,6 +172,65 @@ func TestDo_RetryAndState(t *testing.T) {
 	assert.Empty(t, s.transactionId)
 }
 
+func TestDo_RetryBodyHandling(t *testing.T) {
+	newRetryServer := func(failCount int) (*httptest.Server, *int, *[]string) {
+		attempts := new(int)
+		var bodies []string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			*attempts++
+			body, _ := io.ReadAll(r.Body)
+			bodies = append(bodies, string(body))
+			if *attempts <= failCount {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		}))
+		return srv, attempts, &bodies
+	}
+
+	t.Run("Opaque body preserved across retries", func(t *testing.T) {
+		srv, attempts, bodies := newRetryServer(2)
+		defer srv.Close()
+
+		c, _ := NewClient(srv.URL)
+		s := c.NewSession()
+
+		// Build request with an opaque io.Reader body that Go's http.NewRequest
+		// cannot snapshot (no GetBody auto-set). This exposes the consumed-body bug.
+		bodyContent := "SELECT 1"
+		opaqueReader := io.NopCloser(strings.NewReader(bodyContent))
+		req, _ := http.NewRequest("POST", srv.URL+"/", opaqueReader)
+		s.applyHeaders(req)
+
+		var res map[string]string
+		_, err := s.Do(context.Background(), req, &res)
+
+		require.NoError(t, err)
+		assert.Equal(t, 3, *attempts)
+		for i, body := range *bodies {
+			assert.Equal(t, bodyContent, body, "attempt %d should have full body", i+1)
+		}
+	})
+
+	t.Run("Nil body retries without panic", func(t *testing.T) {
+		srv, attempts, _ := newRetryServer(2)
+		defer srv.Close()
+
+		c, _ := NewClient(srv.URL)
+		s := c.NewSession()
+
+		req, _ := s.NewRequest("GET", "/", nil)
+		var res map[string]string
+		_, err := s.Do(context.Background(), req, &res)
+
+		require.NoError(t, err)
+		assert.Equal(t, 3, *attempts)
+		assert.Equal(t, "ok", res["status"])
+	})
+}
+
 func TestDo_ErrorResponseBodyClosed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
