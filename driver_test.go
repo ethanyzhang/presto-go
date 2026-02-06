@@ -608,6 +608,66 @@ func TestWithSessionSetup(t *testing.T) {
 	assert.True(t, setupCalled, "sessionSetup should have been called")
 }
 
+func TestDriver_ComplexTypes(t *testing.T) {
+	mock := prestotest.NewMockPrestoServer()
+	defer mock.Close()
+
+	mock.AddQuery(&prestotest.MockQueryTemplate{
+		SQL: "SELECT tags, props, addr FROM complex",
+		Columns: []presto.Column{
+			{Name: "tags", Type: "array(varchar)"},
+			{Name: "props", Type: "map(varchar,integer)"},
+			{Name: "addr", Type: "row(street varchar, city varchar)"},
+		},
+		Data: [][]any{
+			{
+				[]any{"go", "presto"},
+				map[string]any{"timeout": 30, "retries": 3},
+				map[string]any{"street": "123 Main St", "city": "Springfield"},
+			},
+			{nil, nil, nil},
+		},
+		DataBatches: 1,
+	})
+
+	db := newTestDB(t, mock.URL())
+	rows, err := db.QueryContext(context.Background(), "SELECT tags, props, addr FROM complex")
+	require.NoError(t, err)
+	defer rows.Close()
+
+	// Row 1: non-null complex types
+	require.True(t, rows.Next())
+	var tags presto.NullSlice[string]
+	var props presto.NullMap[string, float64]
+
+	type Address struct {
+		Street string `json:"street"`
+		City   string `json:"city"`
+	}
+	var addr presto.NullRow[Address]
+
+	require.NoError(t, rows.Scan(&tags, &props, &addr))
+	assert.True(t, tags.Valid)
+	assert.Equal(t, []string{"go", "presto"}, tags.Slice)
+	assert.True(t, props.Valid)
+	assert.Equal(t, float64(30), props.Map["timeout"])
+	assert.True(t, addr.Valid)
+	assert.Equal(t, "123 Main St", addr.Row.Street)
+	assert.Equal(t, "Springfield", addr.Row.City)
+
+	// Row 2: null complex types
+	require.True(t, rows.Next())
+	var tags2 presto.NullSlice[string]
+	var props2 presto.NullMap[string, float64]
+	var addr2 presto.NullRow[Address]
+	require.NoError(t, rows.Scan(&tags2, &props2, &addr2))
+	assert.False(t, tags2.Valid)
+	assert.False(t, props2.Valid)
+	assert.False(t, addr2.Valid)
+
+	require.NoError(t, rows.Err())
+}
+
 // ============================================================
 // Internal tests (package presto) for unexported functions
 // are in driver_internal_test.go
