@@ -31,6 +31,7 @@ const (
 	ClearTransactionHeader   = "X-Presto-Clear-Transaction-Id"
 	ClientInfoHeader         = "X-Presto-Client-Info"
 	ClientTagHeader          = "X-Presto-Client-Tags"
+	SourceHeader             = "X-Presto-Source"
 	TimeZoneHeader           = "X-Presto-Time-Zone"
 
 	DefaultUser         = "presto-go-client"
@@ -51,6 +52,7 @@ type Session struct {
 	schema         string
 	timezone       string
 	clientInfo     string
+	source         string
 	transactionId  string
 	sessionParams  map[string]any
 	clientTags     []string
@@ -120,6 +122,7 @@ func (s *Session) Clone() *Session {
 		schema:         s.schema,
 		timezone:       s.timezone,
 		clientInfo:     s.clientInfo,
+		source:         s.source,
 		transactionId:  s.transactionId,
 		sessionParams:  params,
 		clientTags:     tags,
@@ -168,6 +171,13 @@ func (s *Session) ClientInfo(info string) *Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.clientInfo = info
+	return s
+}
+
+func (s *Session) Source(source string) *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.source = source
 	return s
 }
 
@@ -280,6 +290,9 @@ func (s *Session) applyHeaders(req *http.Request) {
 	}
 	if s.clientInfo != "" {
 		req.Header.Set(s.client.CanonicalHeader(ClientInfoHeader), s.clientInfo)
+	}
+	if s.source != "" {
+		req.Header.Set(s.client.CanonicalHeader(SourceHeader), s.source)
 	}
 
 	// 3. State Headers

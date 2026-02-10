@@ -535,7 +535,7 @@ func (c *prestoConnector) Connect(ctx context.Context) (driver.Conn, error) {
 		session.ClientInfo(c.cfg.clientInfo)
 	}
 	if c.cfg.source != "" {
-		session.ClientInfo(c.cfg.source)
+		session.Source(c.cfg.source)
 	}
 	if len(c.cfg.clientTags) > 0 {
 		session.ClientTags(c.cfg.clientTags...)
