@@ -511,6 +511,14 @@ db := sql.OpenDB(connector)
 go test ./... -v
 ```
 
+### Examples
+
+The `example_test.go` file contains runnable getting-started snippets covering both the `database/sql` interface and the low-level API. All examples are skipped by default since they require a live Presto/Trino server:
+
+```bash
+go test -run TestExample -v
+```
+
 ### Mock Server
 
 The `prestotest` package provides a `MockPrestoServer` for integration testing. It uses only the standard library (`net/http`), so it introduces no additional dependencies.

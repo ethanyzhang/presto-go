@@ -100,4 +100,4 @@ Varbinary values are base64-decoded from Presto's wire format. `time` and `time 
 ## Workflow
 
 - After completing any code change, always check whether README.md, CLAUDE.md, or code comments need to be updated to reflect the change.
-- Before finishing, always run `gofmt -w .`, `go vet ./...`, and `go mod tidy` to ensure no formatting or lint issues remain.
+- Before finishing, always run `gofmt -w .`, `go vet ./...`, `staticcheck ./...`, and `go mod tidy` to ensure no formatting or lint issues remain.
