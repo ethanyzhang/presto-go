@@ -54,16 +54,22 @@ type RawPlanWrapper struct {
 	Plan json.RawMessage `json:"plan"`
 }
 
-// PrepareForInsert recursively flattens the stage tree, parses GC info,
-// and assembles query plans for database insertion.
-func (s *StageInfo) PrepareForInsert(flattened *[]*StageInfo, queryPlan map[string]RawPlanWrapper) error {
-	if s == nil {
-		return nil
-	}
+// processForInsert handles per-stage processing without recursion. It is called from both
+// the recursive tree walk (Presto/older Trino) and the flat list iteration (newer Trino).
+//
+// Processing steps:
+//  1. Strip the query ID prefix from the stage ID (e.g. "queryId.3" → "3")
+//  2. Select the appropriate stats source (Trino uses stageStats, Presto uses latestAttemptExecutionInfo.stats)
+//  3. Parse the GC info JSON to extract stageExecutionId (Presto's speculative execution attempt ID)
+//  4. Append this stage to the flattened list for ORM consumption
+//  5. Add this stage's plan to the assembled query plan map
+func (s *StageInfo) processForInsert(flattened *[]*StageInfo, queryPlan map[string]RawPlanWrapper) error {
+	// Stage IDs are formatted as "queryId.index"; we only keep the index for the database.
 	if index := bytes.IndexByte([]byte(s.StageId), '.'); index > 0 && index+1 < len(s.StageId) {
 		s.StageId = s.StageId[index+1:]
 	}
-	// Trino plan does not have a last attempt execution info, unlike Presto
+	// Trino exposes stats directly on StageInfo as "stageStats", while Presto nests them
+	// under latestAttemptExecutionInfo.stats. Try Trino first, fall back to Presto.
 	stats := s.TrinoStats
 	if stats == nil && s.LatestAttemptExecutionInfo != nil {
 		stats = s.LatestAttemptExecutionInfo.Stats
@@ -77,10 +83,23 @@ func (s *StageInfo) PrepareForInsert(flattened *[]*StageInfo, queryPlan map[stri
 	}
 	*flattened = append(*flattened, s)
 
-	queryPlan[strconv.Itoa(len(queryPlan))] = RawPlanWrapper{
-		Plan: json.RawMessage(s.Plan.JsonRepresentation),
+	if s.Plan != nil {
+		queryPlan[strconv.Itoa(len(queryPlan))] = RawPlanWrapper{
+			Plan: json.RawMessage(s.Plan.JsonRepresentation),
+		}
 	}
+	return nil
+}
 
+// PrepareForInsert recursively walks the nested stage tree (Presto/older Trino format),
+// calling processForInsert on each node to flatten it into the list.
+func (s *StageInfo) PrepareForInsert(flattened *[]*StageInfo, queryPlan map[string]RawPlanWrapper) error {
+	if s == nil {
+		return nil
+	}
+	if err := s.processForInsert(flattened, queryPlan); err != nil {
+		return err
+	}
 	for _, child := range s.SubStages {
 		if err := child.PrepareForInsert(flattened, queryPlan); err != nil {
 			return err
@@ -88,4 +107,25 @@ func (s *StageInfo) PrepareForInsert(flattened *[]*StageInfo, queryPlan map[stri
 	}
 	s.SubStages = nil
 	return nil
+}
+
+// unmarshalFlatStage unmarshals a single stage from the newer Trino flat format.
+// In this format, subStages is an array of stage ID strings (e.g. ["queryId.1", "queryId.2"])
+// rather than nested StageInfo objects. We use a type alias with a json.RawMessage override
+// for subStages so the unmarshal succeeds regardless of the subStages element type.
+// The subStages references are not needed because the stages are already provided as a flat list.
+func unmarshalFlatStage(data json.RawMessage) (*StageInfo, error) {
+	// stageAlias avoids infinite recursion if StageInfo had a custom UnmarshalJSON.
+	type stageAlias StageInfo
+	aux := &struct {
+		*stageAlias
+		// Shadow StageInfo.SubStages to absorb it as raw JSON instead of []*StageInfo.
+		SubStages json.RawMessage `json:"subStages"`
+	}{
+		stageAlias: &stageAlias{},
+	}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return nil, err
+	}
+	return (*StageInfo)(aux.stageAlias), nil
 }

@@ -18,12 +18,23 @@ type QueryInfo struct {
 	ResourceGroupId *json.RawMessage `json:"resourceGroupId" presto_query_creation_info:"resource_group_name" presto_query_statistics:"resource_group_name"`
 	Session         *Session         `json:"session"`
 	QueryStats      *QueryStats      `json:"queryStats"`
-	OutputStage     *StageInfo       `json:"outputStage"`
+	// Presto and older Trino use a recursive tree rooted at OutputStage.
+	OutputStage *StageInfo `json:"outputStage"`
+	// Newer Trino versions use a flat list of stages with string references in subStages.
+	// We capture it as raw JSON because the subStages field type differs ([]string vs []*StageInfo).
+	RawStages json.RawMessage `json:"stages"`
 
 	// Populated by PrepareForInsert
 	FlattenedStageList     []*StageInfo
 	ParsedFailureInfo      *FailureInfo
 	AssembledQueryPlanJson string `presto_query_plans:"json_plan"`
+}
+
+// trinoFlatStages represents the newer Trino format where stages are a flat list
+// with string references in subStages, instead of a recursive outputStage tree.
+type trinoFlatStages struct {
+	OutputStageId string            `json:"outputStageId"`
+	Stages        []json.RawMessage `json:"stages"`
 }
 
 // QueryStats contains query-level execution statistics.
@@ -86,13 +97,36 @@ func (q *QueryInfo) PrepareForInsert() error {
 		q.Session.PrepareForInsert()
 	}
 
+	// Flatten stages into a list and assemble a combined query plan JSON.
+	// The stage tree/list is consumed here and nilled out to avoid holding duplicate data.
 	q.FlattenedStageList = make([]*StageInfo, 0, 8)
-	AssembledQueryPlan := make(map[string]RawPlanWrapper)
-	if err := q.OutputStage.PrepareForInsert(&q.FlattenedStageList, AssembledQueryPlan); err != nil {
-		return err
+	assembledQueryPlan := make(map[string]RawPlanWrapper)
+	if q.OutputStage != nil {
+		// Presto / older Trino: recursively walk the nested outputStage tree.
+		if err := q.OutputStage.PrepareForInsert(&q.FlattenedStageList, assembledQueryPlan); err != nil {
+			return err
+		}
+		q.OutputStage = nil
+	} else if q.RawStages != nil {
+		// Newer Trino: stages are already a flat list. Each stage's subStages field contains
+		// string references (stage IDs) instead of nested objects, so we use unmarshalFlatStage
+		// to absorb subStages as raw JSON and process each stage individually.
+		var flat trinoFlatStages
+		if err := json.Unmarshal(q.RawStages, &flat); err != nil {
+			return err
+		}
+		for _, rawStage := range flat.Stages {
+			stage, err := unmarshalFlatStage(rawStage)
+			if err != nil {
+				return err
+			}
+			if err := stage.processForInsert(&q.FlattenedStageList, assembledQueryPlan); err != nil {
+				return err
+			}
+		}
+		q.RawStages = nil
 	}
-	q.OutputStage = nil
-	if planJson, err := json.Marshal(AssembledQueryPlan); err != nil {
+	if planJson, err := json.Marshal(assembledQueryPlan); err != nil {
 		return err
 	} else {
 		q.AssembledQueryPlanJson = string(planJson)
