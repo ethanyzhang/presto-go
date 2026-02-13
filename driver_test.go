@@ -308,6 +308,55 @@ func TestDriver_Transaction(t *testing.T) {
 	})
 }
 
+func TestDriver_TransactionOptions(t *testing.T) {
+	mock := prestotest.NewMockPrestoServer()
+	defer mock.Close()
+
+	mock.AddQuery(&prestotest.MockQueryTemplate{
+		SQL:         "START TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+		DataBatches: 0,
+	})
+	mock.AddQuery(&prestotest.MockQueryTemplate{
+		SQL:         "START TRANSACTION READ ONLY",
+		DataBatches: 0,
+	})
+	mock.AddQuery(&prestotest.MockQueryTemplate{
+		SQL:         "START TRANSACTION ISOLATION LEVEL READ COMMITTED, READ ONLY",
+		DataBatches: 0,
+	})
+	mock.AddQuery(&prestotest.MockQueryTemplate{
+		SQL:         "COMMIT",
+		DataBatches: 0,
+	})
+
+	db := newTestDB(t, mock.URL())
+
+	t.Run("isolation level", func(t *testing.T) {
+		tx, err := db.BeginTx(context.Background(), &sql.TxOptions{
+			Isolation: sql.LevelSerializable,
+		})
+		require.NoError(t, err)
+		assert.NoError(t, tx.Commit())
+	})
+
+	t.Run("read only", func(t *testing.T) {
+		tx, err := db.BeginTx(context.Background(), &sql.TxOptions{
+			ReadOnly: true,
+		})
+		require.NoError(t, err)
+		assert.NoError(t, tx.Commit())
+	})
+
+	t.Run("isolation level and read only", func(t *testing.T) {
+		tx, err := db.BeginTx(context.Background(), &sql.TxOptions{
+			Isolation: sql.LevelReadCommitted,
+			ReadOnly:  true,
+		})
+		require.NoError(t, err)
+		assert.NoError(t, tx.Commit())
+	})
+}
+
 func TestDriver_OpenDB(t *testing.T) {
 	mock := prestotest.NewMockPrestoServer()
 	defer mock.Close()

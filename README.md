@@ -169,6 +169,15 @@ tx, err := db.BeginTx(ctx, nil)
 tx.Commit() // or tx.Rollback()
 ```
 
+All Presto isolation levels are supported via `sql.TxOptions`:
+
+```go
+tx, err := db.BeginTx(ctx, &sql.TxOptions{
+    Isolation: sql.LevelSerializable,
+    ReadOnly:  true,
+})
+```
+
 ### Client Initialization
 
 ```go

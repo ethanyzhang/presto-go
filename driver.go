@@ -757,18 +757,47 @@ func (c *prestoConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver
 	if c.closed {
 		return nil, driver.ErrBadConn
 	}
-	if opts.Isolation != 0 && driver.IsolationLevel(opts.Isolation) != driver.IsolationLevel(sql.LevelDefault) {
-		return nil, fmt.Errorf("presto: isolation level %d is not supported", opts.Isolation)
-	}
-	if opts.ReadOnly {
-		return nil, fmt.Errorf("presto: read-only transactions are not supported")
+
+	var clauses []string
+
+	if opts.Isolation != 0 && opts.Isolation != driver.IsolationLevel(sql.LevelDefault) {
+		level, err := prestoIsolationLevel(sql.IsolationLevel(opts.Isolation))
+		if err != nil {
+			return nil, err
+		}
+		clauses = append(clauses, "ISOLATION LEVEL "+level)
 	}
 
-	_, err := c.execDirect(ctx, "START TRANSACTION")
+	if opts.ReadOnly {
+		clauses = append(clauses, "READ ONLY")
+	}
+
+	stmt := "START TRANSACTION"
+	if len(clauses) > 0 {
+		stmt += " " + strings.Join(clauses, ", ")
+	}
+
+	_, err := c.execDirect(ctx, stmt)
 	if err != nil {
 		return nil, fmt.Errorf("presto: failed to start transaction: %w", err)
 	}
 	return &prestoTx{conn: c}, nil
+}
+
+// prestoIsolationLevel maps sql.IsolationLevel to Presto SQL syntax.
+func prestoIsolationLevel(level sql.IsolationLevel) (string, error) {
+	switch level {
+	case sql.LevelReadUncommitted:
+		return "READ UNCOMMITTED", nil
+	case sql.LevelReadCommitted:
+		return "READ COMMITTED", nil
+	case sql.LevelRepeatableRead:
+		return "REPEATABLE READ", nil
+	case sql.LevelSerializable:
+		return "SERIALIZABLE", nil
+	default:
+		return "", fmt.Errorf("presto: unsupported isolation level: %d", level)
+	}
 }
 
 // QueryContext implements driver.QueryerContext.

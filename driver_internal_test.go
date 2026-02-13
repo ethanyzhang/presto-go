@@ -1,6 +1,7 @@
 package presto
 
 import (
+	"database/sql"
 	"database/sql/driver"
 	"encoding/base64"
 	"reflect"
@@ -536,6 +537,31 @@ func TestParseIntervalDayToSecond(t *testing.T) {
 
 	t.Run("invalid time", func(t *testing.T) {
 		_, err := parseIntervalDayToSecond("1 bad:time")
+		assert.Error(t, err)
+	})
+}
+
+func TestPrestoIsolationLevel(t *testing.T) {
+	tests := []struct {
+		level sql.IsolationLevel
+		want  string
+	}{
+		{sql.LevelReadUncommitted, "READ UNCOMMITTED"},
+		{sql.LevelReadCommitted, "READ COMMITTED"},
+		{sql.LevelRepeatableRead, "REPEATABLE READ"},
+		{sql.LevelSerializable, "SERIALIZABLE"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			got, err := prestoIsolationLevel(tt.level)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+
+	t.Run("unsupported", func(t *testing.T) {
+		_, err := prestoIsolationLevel(sql.LevelLinearizable)
 		assert.Error(t, err)
 	})
 }
