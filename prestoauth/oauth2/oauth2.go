@@ -133,7 +133,13 @@ func parseDSN(dsn string) (presto.RequestOption, string, error) {
 			TokenURL:     tokenURL,
 		}
 		if scopes != "" {
-			cfg.Scopes = strings.Split(scopes, ",")
+			parts := strings.Split(scopes, ",")
+			cfg.Scopes = make([]string, 0, len(parts))
+			for _, s := range parts {
+				if trimmed := strings.TrimSpace(s); trimmed != "" {
+					cfg.Scopes = append(cfg.Scopes, trimmed)
+				}
+			}
 		}
 		opt, err := NewRequestOption(cfg)
 		if err != nil {

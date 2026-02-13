@@ -3,8 +3,10 @@ module github.com/ethanyzhang/presto-go
 go 1.25.7
 
 require (
+	github.com/docker/go-units v0.5.0
 	github.com/rs/zerolog v1.34.0
 	github.com/stretchr/testify v1.11.1
+	github.com/xhit/go-str2duration/v2 v2.1.0
 )
 
 require (

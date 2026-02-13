@@ -34,11 +34,14 @@ const (
 	SourceHeader             = "X-Presto-Source"
 	TimeZoneHeader           = "X-Presto-Time-Zone"
 
-	DefaultUser         = "presto-go-client"
 	ContentEncodingGzip = "gzip"
 	MaxRetryAttempts    = 10
 	MaxRetryDelay       = 30 * time.Second
 )
+
+// DefaultUser is the default username sent in the X-Presto-User header.
+// Consumers can override this package-level variable to change the default.
+var DefaultUser = "presto-go-client"
 
 // RequestOption allows for functional overrides on individual requests
 type RequestOption func(*http.Request)
@@ -207,11 +210,44 @@ func (s *Session) ClientTags(tags ...string) *Session {
 	return s
 }
 
-func (s *Session) AppendClientTag(tag string) *Session {
+func (s *Session) AppendClientTag(tags ...string) *Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.clientTags = append(s.clientTags, tag)
+	s.clientTags = append(s.clientTags, tags...)
 	return s
+}
+
+// --- Session Getters ---
+
+// GetCatalog returns the current catalog for this session.
+func (s *Session) GetCatalog() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.catalog
+}
+
+// GetSchema returns the current schema for this session.
+func (s *Session) GetSchema() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.schema
+}
+
+// GetTimeZone returns the current timezone for this session.
+func (s *Session) GetTimeZone() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.timezone
+}
+
+// GetSessionParams returns the formatted session parameters header value.
+func (s *Session) GetSessionParams() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.sessionParams) == 0 {
+		return ""
+	}
+	return s.client.generateSessionHeader(s.sessionParams)
 }
 
 // RequestOptions sets persistent request options that are applied to every
@@ -420,6 +456,11 @@ func (c *Client) ForceHTTPS(force bool) *Client {
 	return c
 }
 
+// GetHost returns the host (and port, if present) of the server URL.
+func (c *Client) GetHost() string {
+	return c.serverUrl.Host
+}
+
 // HTTPClient replaces the underlying http.Client. Use this to provide a
 // client with custom TLS configuration, timeouts, or transport settings.
 func (c *Client) HTTPClient(hc *http.Client) *Client {
@@ -481,6 +522,12 @@ func (c *Client) CanonicalHeader(name string) string {
 		return strings.Replace(name, "X-Presto", "X-Trino", 1)
 	}
 	return name
+}
+
+// GenerateSessionParamsHeaderValue formats a map of session parameters into
+// the header value format expected by Presto/Trino (key=value pairs joined by commas).
+func (c *Client) GenerateSessionParamsHeaderValue(params map[string]any) string {
+	return c.generateSessionHeader(params)
 }
 
 func (c *Client) generateSessionHeader(params map[string]any) string {

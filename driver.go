@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -141,7 +142,7 @@ func (cfg *dsnConfig) serverURL() string {
 
 // hasTLS returns true if any TLS-related DSN parameter is set.
 func (cfg *dsnConfig) hasTLS() bool {
-	return cfg.sslCert != "" || cfg.sslCA != "" || cfg.sslSkipVerify
+	return cfg.sslCert != "" || cfg.sslKey != "" || cfg.sslCA != "" || cfg.sslSkipVerify
 }
 
 // buildTLSConfig constructs a *tls.Config from DSN parameters.
@@ -149,14 +150,24 @@ func (cfg *dsnConfig) buildTLSConfig() (*tls.Config, error) {
 	if !cfg.hasTLS() {
 		return nil, nil
 	}
+	return BuildTLSConfig(cfg.sslCA, cfg.sslCert, cfg.sslKey, cfg.sslSkipVerify)
+}
 
+// BuildTLSConfig constructs a *tls.Config from common TLS parameters.
+// Use this with Client.TLSConfig() when using the low-level client API:
+//
+//	tlsCfg, err := presto.BuildTLSConfig("/path/ca.pem", "", "", false)
+//	client.TLSConfig(tlsCfg)
+//
+// Pass empty strings to skip loading CA or client certificates.
+func BuildTLSConfig(caFile, certFile, keyFile string, skipVerify bool) (*tls.Config, error) {
 	tlsCfg := &tls.Config{
-		InsecureSkipVerify: cfg.sslSkipVerify,
+		InsecureSkipVerify: skipVerify,
 	}
 
 	// Load client certificate for mutual TLS
-	if cfg.sslCert != "" && cfg.sslKey != "" {
-		cert, err := tls.LoadX509KeyPair(cfg.sslCert, cfg.sslKey)
+	if certFile != "" && keyFile != "" {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load client certificate: %w", err)
 		}
@@ -164,14 +175,14 @@ func (cfg *dsnConfig) buildTLSConfig() (*tls.Config, error) {
 	}
 
 	// Load custom CA certificate
-	if cfg.sslCA != "" {
-		caCert, err := os.ReadFile(cfg.sslCA)
+	if caFile != "" {
+		caCert, err := os.ReadFile(caFile)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read CA certificate: %w", err)
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(caCert) {
-			return nil, fmt.Errorf("failed to parse CA certificate from %s", cfg.sslCA)
+			return nil, fmt.Errorf("failed to parse CA certificate from %s", caFile)
 		}
 		tlsCfg.RootCAs = pool
 	}
@@ -202,6 +213,8 @@ func valueToSQL(v driver.Value) (string, error) {
 		return "X'" + hex.EncodeToString(val) + "'", nil
 	case time.Time:
 		return "TIMESTAMP '" + val.Format("2006-01-02 15:04:05.000") + "'", nil
+	case time.Duration:
+		return "INTERVAL '" + formatDurationAsDayToSecond(val) + "' DAY TO SECOND", nil
 	default:
 		return "", fmt.Errorf("unsupported parameter type: %T", v)
 	}
@@ -277,8 +290,10 @@ func scanTypeForPrestoType(prestoType string) reflect.Type {
 		return reflect.TypeOf(float64(0))
 	case "boolean":
 		return reflect.TypeOf(false)
-	case "varchar", "char", "decimal", "json":
+	case "varchar", "char", "decimal", "json", "interval year to month":
 		return reflect.TypeOf("")
+	case "interval day to second":
+		return reflect.TypeOf(time.Duration(0))
 	case "varbinary":
 		return reflect.TypeOf([]byte(nil))
 	case "date", "timestamp", "timestamp with time zone", "time", "time with time zone":
@@ -344,6 +359,18 @@ func convertValue(val any, prestoType string) (driver.Value, error) {
 			return fmt.Sprintf("%v", val), nil
 		}
 
+	case "interval year to month":
+		if s, ok := val.(string); ok {
+			return s, nil
+		}
+		return nil, fmt.Errorf("cannot convert %T to interval year to month", val)
+
+	case "interval day to second":
+		if s, ok := val.(string); ok {
+			return parseIntervalDayToSecond(s)
+		}
+		return nil, fmt.Errorf("cannot convert %T to interval day to second", val)
+
 	case "date":
 		if s, ok := val.(string); ok {
 			return time.Parse("2006-01-02", s)
@@ -362,10 +389,26 @@ func convertValue(val any, prestoType string) (driver.Value, error) {
 		}
 		return nil, fmt.Errorf("cannot convert %T to timestamp with time zone", val)
 
+	case "time":
+		if s, ok := val.(string); ok {
+			return parseTime(s)
+		}
+		return nil, fmt.Errorf("cannot convert %T to time", val)
+
+	case "time with time zone":
+		if s, ok := val.(string); ok {
+			return parseTimeWithTZ(s)
+		}
+		return nil, fmt.Errorf("cannot convert %T to time with time zone", val)
+
 	case "varbinary":
 		if s, ok := val.(string); ok {
-			// Presto returns varbinary as base64
-			return []byte(s), nil
+			// Presto returns varbinary as base64-encoded string
+			decoded, err := base64.StdEncoding.DecodeString(s)
+			if err != nil {
+				return nil, fmt.Errorf("invalid base64 varbinary: %w", err)
+			}
+			return decoded, nil
 		}
 		return nil, fmt.Errorf("cannot convert %T to varbinary", val)
 
@@ -411,6 +454,126 @@ func parseTimestampWithTZ(s string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("cannot parse timestamp with time zone %q", s)
+}
+
+// parseTime parses a Presto "time" string (e.g. "10:30:00.000") into a time.Time
+// with a zero date (0000-01-01).
+func parseTime(s string) (time.Time, error) {
+	formats := []string{
+		"15:04:05.000",
+		"15:04:05.000000",
+		"15:04:05.000000000",
+		"15:04:05",
+	}
+	for _, f := range formats {
+		if t, err := time.Parse(f, s); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("cannot parse time %q", s)
+}
+
+// parseTimeWithTZ parses a Presto "time with time zone" string
+// (e.g. "10:30:00.000 UTC", "10:30:00.000 +05:30") into a time.Time.
+func parseTimeWithTZ(s string) (time.Time, error) {
+	formats := []string{
+		"15:04:05.000 MST",
+		"15:04:05.000 -07:00",
+		"15:04:05.000000 MST",
+		"15:04:05.000000 -07:00",
+		"15:04:05 MST",
+		"15:04:05 -07:00",
+	}
+	for _, f := range formats {
+		if t, err := time.Parse(f, s); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("cannot parse time with time zone %q", s)
+}
+
+// parseIntervalDayToSecond parses a Presto "interval day to second" string
+// with format "D HH:MM:SS.mmm" (e.g. "5 03:14:22.123") into a time.Duration.
+func parseIntervalDayToSecond(s string) (time.Duration, error) {
+	negative := false
+	if len(s) > 0 && s[0] == '-' {
+		negative = true
+		s = s[1:]
+	}
+
+	// Split into "days" and "HH:MM:SS.mmm"
+	parts := strings.SplitN(s, " ", 2)
+	if len(parts) != 2 {
+		return 0, fmt.Errorf("cannot parse interval day to second %q", s)
+	}
+
+	days, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("cannot parse interval day to second days %q: %w", parts[0], err)
+	}
+
+	timeParts := strings.Split(parts[1], ":")
+	if len(timeParts) != 3 {
+		return 0, fmt.Errorf("cannot parse interval day to second time %q", parts[1])
+	}
+
+	hours, err := strconv.ParseInt(timeParts[0], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("cannot parse interval day to second hours %q: %w", timeParts[0], err)
+	}
+
+	minutes, err := strconv.ParseInt(timeParts[1], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("cannot parse interval day to second minutes %q: %w", timeParts[1], err)
+	}
+
+	// Seconds may have millisecond part: "22.123"
+	secParts := strings.SplitN(timeParts[2], ".", 2)
+	seconds, err := strconv.ParseInt(secParts[0], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("cannot parse interval day to second seconds %q: %w", secParts[0], err)
+	}
+
+	var millis int64
+	if len(secParts) == 2 {
+		millis, err = strconv.ParseInt(secParts[1], 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("cannot parse interval day to second millis %q: %w", secParts[1], err)
+		}
+	}
+
+	d := time.Duration(days)*24*time.Hour +
+		time.Duration(hours)*time.Hour +
+		time.Duration(minutes)*time.Minute +
+		time.Duration(seconds)*time.Second +
+		time.Duration(millis)*time.Millisecond
+
+	if negative {
+		d = -d
+	}
+	return d, nil
+}
+
+// formatDurationAsDayToSecond formats a time.Duration as Presto's
+// "D HH:MM:SS.mmm" interval day to second format.
+func formatDurationAsDayToSecond(d time.Duration) string {
+	sign := ""
+	if d < 0 {
+		sign = "-"
+		d = -d
+	}
+
+	totalMillis := d.Milliseconds()
+	days := totalMillis / (24 * 60 * 60 * 1000)
+	totalMillis %= 24 * 60 * 60 * 1000
+	hours := totalMillis / (60 * 60 * 1000)
+	totalMillis %= 60 * 60 * 1000
+	minutes := totalMillis / (60 * 1000)
+	totalMillis %= 60 * 1000
+	seconds := totalMillis / 1000
+	millis := totalMillis % 1000
+
+	return fmt.Sprintf("%s%d %02d:%02d:%02d.%03d", sign, days, hours, minutes, seconds, millis)
 }
 
 // --- Driver Types ---
@@ -572,6 +735,9 @@ var _ driver.ConnBeginTx = (*prestoConn)(nil)
 
 // Prepare implements driver.Conn.
 func (c *prestoConn) Prepare(query string) (driver.Stmt, error) {
+	if c.closed {
+		return nil, driver.ErrBadConn
+	}
 	return &prestoStmt{conn: c, query: query}, nil
 }
 
@@ -588,6 +754,9 @@ func (c *prestoConn) Begin() (driver.Tx, error) {
 
 // BeginTx implements driver.ConnBeginTx.
 func (c *prestoConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	if c.closed {
+		return nil, driver.ErrBadConn
+	}
 	if opts.Isolation != 0 && driver.IsolationLevel(opts.Isolation) != driver.IsolationLevel(sql.LevelDefault) {
 		return nil, fmt.Errorf("presto: isolation level %d is not supported", opts.Isolation)
 	}
@@ -604,6 +773,9 @@ func (c *prestoConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver
 
 // QueryContext implements driver.QueryerContext.
 func (c *prestoConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	if c.closed {
+		return nil, driver.ErrBadConn
+	}
 	positional, err := namedToPositional(args)
 	if err != nil {
 		return nil, err
@@ -630,6 +802,9 @@ func (c *prestoConn) QueryContext(ctx context.Context, query string, args []driv
 
 // ExecContext implements driver.ExecerContext.
 func (c *prestoConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	if c.closed {
+		return nil, driver.ErrBadConn
+	}
 	positional, err := namedToPositional(args)
 	if err != nil {
 		return nil, err

@@ -5,7 +5,8 @@ A Go client library for [Presto](https://prestodb.io/) and [Trino](https://trino
 ## Features
 
 - **`database/sql` driver** — use the standard Go database API (`sql.Open`, `db.Query`, `rows.Scan`)
-- Full Presto/Trino REST API support (query, fetch, cancel)
+- Complete Presto REST API client (query execution, cluster info, query state, query info)
+- Query info/stats parsing (`query_json` subpackage)
 - Trino compatibility mode (automatic header translation)
 - Session management with isolated, cloneable sessions
 - Transaction state tracking (automatic via response headers)
@@ -198,12 +199,18 @@ db, _ := sql.Open("presto", "presto://host:8443/catalog?ssl_skip_verify=true")
 
 ```go
 client, _ := presto.NewClient("https://presto:8443")
-client.TLSConfig(&tls.Config{
-    RootCAs: caCertPool,
-})
+
+// Use BuildTLSConfig helper (same logic as DSN parsing):
+tlsCfg, _ := presto.BuildTLSConfig("/path/ca.pem", "", "", false)
+client.TLSConfig(tlsCfg)
+
+// or with mutual TLS:
+tlsCfg, _ = presto.BuildTLSConfig("/path/ca.pem", "/path/cert.pem", "/path/key.pem", false)
+client.TLSConfig(tlsCfg)
+
 // or provide a fully custom http.Client:
 client.HTTPClient(&http.Client{
-    Transport: &http.Transport{TLSClientConfig: tlsConfig},
+    Transport: &http.Transport{TLSClientConfig: tlsCfg},
 })
 ```
 
@@ -257,6 +264,40 @@ err = results.Drain(ctx, func(qr *presto.QueryResults) error {
     fmt.Printf("Batch: %d rows\n", len(qr.Data))
     return nil
 })
+```
+
+### REST API Endpoints
+
+#### Cluster Info
+
+```go
+stats, _, err := session.GetClusterInfo(ctx)
+fmt.Printf("Active workers: %d, Running queries: %d\n", stats.ActiveWorkers, stats.RunningQueries)
+```
+
+#### Query State
+
+```go
+// List all queries for a specific user
+user := "analyst"
+states, _, err := session.GetQueryState(ctx, &presto.GetQueryStateOptions{
+    User: &user,
+})
+for _, s := range states {
+    fmt.Printf("Query %s: %s\n", s.QueryId, s.QueryState)
+}
+```
+
+#### Query Info
+
+```go
+// Decode into a struct
+var info query_json.QueryInfo
+_, err := session.GetQueryInfo(ctx, "20231001_123456_00001_xxxxx", &info)
+
+// Or write raw JSON to a file
+file, _ := os.Create("query.json")
+_, err = session.GetQueryInfo(ctx, queryId, file)
 ```
 
 ### Cancellation
@@ -430,6 +471,16 @@ fmt.Println(addr.Row.Street) // "123 Main St"
 ```
 
 All three types are nullable (`Valid` field), implement `sql.Scanner` and `driver.Valuer`, and support any JSON-compatible type parameter.
+
+### Interval Types
+
+`INTERVAL DAY TO SECOND` columns are scanned as `time.Duration`. `INTERVAL YEAR TO MONTH` columns are scanned as `string` (in Presto's `"Y-M"` format, e.g. `"3-6"` for 3 years 6 months) since months and years are not fixed-length durations.
+
+When passing parameters, `time.Duration` values are interpolated as `INTERVAL '...' DAY TO SECOND`:
+
+```go
+rows, err := db.QueryContext(ctx, "SELECT date_add('day', ?, now())", 2*24*time.Hour+6*time.Hour)
+```
 
 ### Connector Options
 

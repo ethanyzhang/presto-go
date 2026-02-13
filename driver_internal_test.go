@@ -2,6 +2,7 @@ package presto
 
 import (
 	"database/sql/driver"
+	"encoding/base64"
 	"reflect"
 	"testing"
 	"time"
@@ -148,6 +149,11 @@ func TestValueToSQL(t *testing.T) {
 		{"bytes", []byte{0xDE, 0xAD, 0xBE, 0xEF}, "X'deadbeef'"},
 		{"empty bytes", []byte{}, "X''"},
 		{"time", time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC), "TIMESTAMP '2024-01-15 10:30:00.000'"},
+		{"duration", 5*24*time.Hour + 3*time.Hour + 14*time.Minute + 22*time.Second + 123*time.Millisecond,
+			"INTERVAL '5 03:14:22.123' DAY TO SECOND"},
+		{"negative duration", -(2*24*time.Hour + 6*time.Hour),
+			"INTERVAL '-2 06:00:00.000' DAY TO SECOND"},
+		{"zero duration", time.Duration(0), "INTERVAL '0 00:00:00.000' DAY TO SECOND"},
 	}
 
 	for _, tt := range tests {
@@ -276,8 +282,13 @@ func TestConvertValue(t *testing.T) {
 		{"decimal from string", "123.456", "decimal", "123.456"},
 		{"date", "2024-01-15", "date", time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)},
 		{"timestamp", "2024-01-15 10:30:00.000", "timestamp", time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)},
-		{"varbinary", "hello", "varbinary", []byte("hello")},
+		{"time", "10:30:00.000", "time", time.Date(0, 1, 1, 10, 30, 0, 0, time.UTC)},
+		{"time with time zone", "10:30:00.000 UTC", "time with time zone", time.Date(0, 1, 1, 10, 30, 0, 0, time.UTC)},
+		{"varbinary", base64.StdEncoding.EncodeToString([]byte("hello")), "varbinary", []byte("hello")},
 		{"array", []any{1.0, 2.0}, "array(integer)", "[1,2]"},
+		{"interval year to month", "3-6", "interval year to month", "3-6"},
+		{"interval day to second", "5 03:14:22.123", "interval day to second",
+			5*24*time.Hour + 3*time.Hour + 14*time.Minute + 22*time.Second + 123*time.Millisecond},
 	}
 
 	for _, tt := range tests {
@@ -309,6 +320,18 @@ func TestConvertValue(t *testing.T) {
 
 		_, err = convertValue(42, "varbinary")
 		assert.Error(t, err)
+
+		_, err = convertValue(42, "time")
+		assert.Error(t, err)
+
+		_, err = convertValue(42, "time with time zone")
+		assert.Error(t, err)
+
+		_, err = convertValue(42, "interval year to month")
+		assert.Error(t, err)
+
+		_, err = convertValue(42, "interval day to second")
+		assert.Error(t, err)
 	})
 }
 
@@ -333,8 +356,12 @@ func TestScanTypeForPrestoType(t *testing.T) {
 		{"date", reflect.TypeOf(time.Time{})},
 		{"timestamp", reflect.TypeOf(time.Time{})},
 		{"timestamp with time zone", reflect.TypeOf(time.Time{})},
+		{"time", reflect.TypeOf(time.Time{})},
+		{"time with time zone", reflect.TypeOf(time.Time{})},
 		{"array(integer)", reflect.TypeOf("")},
 		{"map(varchar,integer)", reflect.TypeOf("")},
+		{"interval year to month", reflect.TypeOf("")},
+		{"interval day to second", reflect.TypeOf(time.Duration(0))},
 		{"unknown_type", reflect.TypeOf("")},
 	}
 
@@ -433,6 +460,82 @@ func TestParseTimestampWithTZ(t *testing.T) {
 
 	t.Run("invalid", func(t *testing.T) {
 		_, err := parseTimestampWithTZ("not valid")
+		assert.Error(t, err)
+	})
+}
+
+func TestParseTime(t *testing.T) {
+	tests := []struct {
+		input string
+		want  time.Time
+	}{
+		{"10:30:00.000", time.Date(0, 1, 1, 10, 30, 0, 0, time.UTC)},
+		{"23:59:59.999", time.Date(0, 1, 1, 23, 59, 59, 999000000, time.UTC)},
+		{"00:00:00", time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := parseTime(tt.input)
+			require.NoError(t, err)
+			assert.True(t, tt.want.Equal(got))
+		})
+	}
+
+	t.Run("invalid", func(t *testing.T) {
+		_, err := parseTime("not valid")
+		assert.Error(t, err)
+	})
+}
+
+func TestParseTimeWithTZ(t *testing.T) {
+	t.Run("named zone", func(t *testing.T) {
+		got, err := parseTimeWithTZ("10:30:00.000 UTC")
+		require.NoError(t, err)
+		assert.Equal(t, 10, got.Hour())
+		assert.Equal(t, 30, got.Minute())
+	})
+
+	t.Run("offset format", func(t *testing.T) {
+		got, err := parseTimeWithTZ("10:30:00.000 +05:30")
+		require.NoError(t, err)
+		assert.Equal(t, 10, got.Hour())
+	})
+
+	t.Run("invalid", func(t *testing.T) {
+		_, err := parseTimeWithTZ("not valid")
+		assert.Error(t, err)
+	})
+}
+
+func TestParseIntervalDayToSecond(t *testing.T) {
+	tests := []struct {
+		input string
+		want  time.Duration
+	}{
+		{"0 00:00:00.000", 0},
+		{"5 03:14:22.123", 5*24*time.Hour + 3*time.Hour + 14*time.Minute + 22*time.Second + 123*time.Millisecond},
+		{"0 12:00:00.000", 12 * time.Hour},
+		{"1 00:00:00.000", 24 * time.Hour},
+		{"-2 06:00:00.000", -(2*24*time.Hour + 6*time.Hour)},
+		{"0 00:00:00.001", time.Millisecond},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := parseIntervalDayToSecond(tt.input)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+
+	t.Run("invalid format", func(t *testing.T) {
+		_, err := parseIntervalDayToSecond("not valid")
+		assert.Error(t, err)
+	})
+
+	t.Run("invalid time", func(t *testing.T) {
+		_, err := parseIntervalDayToSecond("1 bad:time")
 		assert.Error(t, err)
 	})
 }

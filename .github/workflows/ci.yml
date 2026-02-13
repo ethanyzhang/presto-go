@@ -109,6 +109,36 @@ jobs:
         with:
           version: "latest"
 
+  lint-submodules:
+    name: Lint Submodules (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module:
+          - prestoauth/kerberos
+          - prestoauth/oauth2
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Run go vet
+        working-directory: ${{ matrix.module }}
+        run: go vet ./...
+
+      - name: Check formatting
+        working-directory: ${{ matrix.module }}
+        run: |
+          UNFORMATTED=$(gofmt -l .)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "The following files are not formatted:"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+
   vuln:
     name: Vulnerability Check
     runs-on: ubuntu-latest

@@ -139,6 +139,22 @@ func TestParseDSN(t *testing.T) {
 		assert.NotContains(t, cleanDSN, "oauth2_scopes")
 		assert.Contains(t, cleanDSN, "timezone=UTC")
 	})
+
+	t.Run("scopes with whitespace are trimmed", func(t *testing.T) {
+		tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Verify scopes are trimmed in the token request
+			r.ParseForm()
+			assert.Equal(t, "read write", r.PostForm.Get("scope"))
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"access_token":"token","token_type":"Bearer","expires_in":3600}`))
+		}))
+		defer tokenServer.Close()
+
+		dsn := "presto://host:8080/catalog?oauth2_client_id=id&oauth2_client_secret=secret&oauth2_token_url=" + tokenServer.URL + "&oauth2_scopes=read,+write"
+		opt, _, err := parseDSN(dsn)
+		require.NoError(t, err)
+		require.NotNil(t, opt)
+	})
 }
 
 func TestNewConnector_StaticToken(t *testing.T) {

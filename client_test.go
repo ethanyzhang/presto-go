@@ -83,6 +83,52 @@ func TestSession_Setters(t *testing.T) {
 	assert.Empty(t, s.sessionParams)
 }
 
+func TestSession_Getters(t *testing.T) {
+	c, _ := NewClient("http://localhost:8080")
+	s := c.NewSession()
+	s.Catalog("hive").Schema("default").TimeZone("UTC").SessionParam("k1", "v1")
+
+	assert.Equal(t, "hive", s.GetCatalog())
+	assert.Equal(t, "default", s.GetSchema())
+	assert.Equal(t, "UTC", s.GetTimeZone())
+	assert.Contains(t, s.GetSessionParams(), "k1=v1")
+}
+
+func TestSession_GetSessionParams_Empty(t *testing.T) {
+	c, _ := NewClient("http://localhost")
+	s := c.NewSession()
+	assert.Empty(t, s.GetSessionParams())
+}
+
+func TestClient_GetHost(t *testing.T) {
+	c, _ := NewClient("http://myhost:8080")
+	assert.Equal(t, "myhost:8080", c.GetHost())
+}
+
+func TestSession_AppendClientTag_Variadic(t *testing.T) {
+	c, _ := NewClient("http://localhost")
+	s := c.NewSession()
+	s.ClientTags("t1")
+	s.AppendClientTag("t2", "t3")
+	assert.Equal(t, []string{"t1", "t2", "t3"}, s.clientTags)
+}
+
+func TestDefaultUser_IsVar(t *testing.T) {
+	original := DefaultUser
+	defer func() { DefaultUser = original }()
+
+	DefaultUser = "custom-user"
+	c, _ := NewClient("http://localhost")
+	assert.Equal(t, "custom-user", c.userInfo.Username())
+}
+
+func TestClient_GenerateSessionParamsHeaderValue(t *testing.T) {
+	c, _ := NewClient("http://localhost")
+	params := map[string]any{"key": "value"}
+	header := c.GenerateSessionParamsHeaderValue(params)
+	assert.Equal(t, "key=value", header)
+}
+
 func TestClient_CanonicalHeader(t *testing.T) {
 	c, _ := NewClient("http://localhost")
 

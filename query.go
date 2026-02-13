@@ -158,3 +158,26 @@ func (s *Session) CancelQuery(ctx context.Context, nextUri string, opts ...Reque
 
 	return s.requestQueryResults(ctx, req)
 }
+
+// GetQueryInfo retrieves query execution details from /v1/query/{queryId}.
+// The v parameter controls how the response is handled:
+//   - Pass a struct pointer (e.g., &QueryInfo{}) to decode the JSON response into it
+//   - Pass an io.Writer (e.g., *os.File) to write the raw JSON response
+//   - Pass nil to discard the response body
+//
+// Example:
+//
+//	// Decode into a struct
+//	var info query_json.QueryInfo
+//	resp, err := session.GetQueryInfo(ctx, "20231001_123456_00001_xxxxx", &info)
+//
+//	// Write raw JSON to a file
+//	file, _ := os.Create("query.json")
+//	resp, err := session.GetQueryInfo(ctx, "20231001_123456_00001_xxxxx", file)
+func (s *Session) GetQueryInfo(ctx context.Context, queryId string, v any, opts ...RequestOption) (*http.Response, error) {
+	req, err := s.NewRequest("GET", "v1/query/"+url.PathEscape(queryId), nil, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return s.Do(ctx, req, v)
+}

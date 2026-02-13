@@ -269,13 +269,16 @@ func (m *MockPrestoServer) sendQueryResponse(w http.ResponseWriter, queryID stri
 	// Determine if more batches (either queue status or data) are expected.
 	hasMore := query.QueuedFor < queueBatchCount || batchID < dataBatchCount
 	if !hasMore && query.State == QueryStateRunning {
-		query.State = QueryStateFinished
+		if query.Template.Error != nil {
+			query.State = QueryStateFailed
+		} else {
+			query.State = QueryStateFinished
+		}
 	}
 
 	resp := presto.QueryResults{
 		Id:      queryID,
 		Columns: query.Template.Columns,
-		Error:   query.Template.Error,
 		Stats: presto.StatementStats{
 			State:           string(query.State),
 			Scheduled:       true,
@@ -310,6 +313,12 @@ func (m *MockPrestoServer) sendQueryResponse(w http.ResponseWriter, queryID stri
 				resp.Data[i], _ = json.Marshal(row)
 			}
 		}
+	}
+
+	// Only include error in the final response, matching real Presto behavior
+	// where errors are reported after query planning/execution completes.
+	if !hasMore && query.Template.Error != nil {
+		resp.Error = query.Template.Error
 	}
 
 	if query.State == QueryStateFinished || query.State == QueryStateCancelled || query.State == QueryStateFailed {

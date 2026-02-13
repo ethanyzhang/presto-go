@@ -4,7 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Go client library for [Presto](https://prestodb.io/) and [Trino](https://trino.io/) SQL query engines. Provides both a `database/sql` driver (registered as `"presto"`) and a low-level API for direct query execution with batch streaming.
+Go client library for [Presto](https://prestodb.io/) and [Trino](https://trino.io/) SQL query engines. Provides:
+- Complete Presto REST API client (query execution, cluster info, query state, query info)
+- Go `database/sql` driver (registered as `"presto"`)
+- Query info/stats parsing (`query_json` subpackage)
 
 ## Commands
 
@@ -41,6 +44,7 @@ Three separate Go modules share this repo. Auth modules are opt-in to avoid forc
 ```
 github.com/ethanyzhang/presto-go           # root module (presto package)
 ├── utils/                                  # BiMap utility (subpackage, same module)
+├── query_json/                             # Query info/stats types (subpackage, same module)
 ├── prestotest/                             # MockPrestoServer (subpackage, same module)
 ├── prestoauth/kerberos/                    # separate module (gokrb5 dep)
 └── prestoauth/oauth2/                      # separate module (x/oauth2 dep)
@@ -72,6 +76,12 @@ Auth module DSN params are parsed and stripped by each module before passing the
 
 Complex Presto types (ARRAY, MAP, ROW) are returned as JSON strings through the driver. `NullSlice[T]`, `NullMap[K,V]`, and `NullRow[T]` in `types.go` implement `sql.Scanner` for deserializing them.
 
+Interval types: `INTERVAL DAY TO SECOND` maps to `time.Duration`; `INTERVAL YEAR TO MONTH` maps to `string` (Presto's `"Y-M"` wire format). `time.Duration` query parameters are interpolated as `INTERVAL '...' DAY TO SECOND`.
+
+`BuildTLSConfig(caFile, certFile, keyFile, skipVerify)` is an exported helper for constructing `*tls.Config` — shared by the driver's DSN parsing and available to low-level `Client` API users.
+
+Varbinary values are base64-decoded from Presto's wire format. `time` and `time with time zone` types are parsed to `time.Time`. Closed connections return `driver.ErrBadConn`.
+
 ### Query Lifecycle
 
 `Session.Query()` → POST to `/v1/statement` → returns `QueryResults`. Results are fetched batch-by-batch via `FetchNextBatch()` or streamed via `Drain()`. Context cancellation triggers a DELETE request to cancel the query server-side.
@@ -86,3 +96,8 @@ Complex Presto types (ARRAY, MAP, ROW) are returned as JSON strings through the 
 ### Trino Compatibility
 
 `Client.IsTrino(true)` causes `CanonicalHeader()` to rewrite `X-Presto-*` headers to `X-Trino-*`. The DSN scheme `trino://` enables this automatically.
+
+## Workflow
+
+- After completing any code change, always check whether README.md, CLAUDE.md, or code comments need to be updated to reflect the change.
+- Before finishing, always run `gofmt -w .`, `go vet ./...`, and `go mod tidy` to ensure no formatting or lint issues remain.
