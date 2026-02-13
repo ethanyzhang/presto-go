@@ -126,6 +126,9 @@ func NewMockPrestoServer() *MockPrestoServer {
 	// DELETE /v1/statement/{status}/{queryId}/{batchId}: Cancels a running query.
 	mux.HandleFunc("DELETE /v1/statement/{status}/{queryId}/{batchId}", mock.handleCancelQuery)
 
+	// GET /v1/query/{queryId}: Returns query info.
+	mux.HandleFunc("GET /v1/query/{queryId}", mock.handleQueryInfo)
+
 	mock.server = httptest.NewServer(mux)
 
 	return mock
@@ -199,6 +202,27 @@ func (m *MockPrestoServer) handleQueryInternal(w http.ResponseWriter, r *http.Re
 func (m *MockPrestoServer) handleFetchNextBatch(w http.ResponseWriter, r *http.Request) {
 	batchID, _ := strconv.Atoi(r.PathValue("batchId"))
 	m.sendQueryResponse(w, r.PathValue("queryId"), batchID)
+}
+
+func (m *MockPrestoServer) handleQueryInfo(w http.ResponseWriter, r *http.Request) {
+	queryID := r.PathValue("queryId")
+
+	m.queriesMutex.RLock()
+	query, exists := m.activeQueries[queryID]
+	m.queriesMutex.RUnlock()
+
+	state := "FINISHED"
+	var sql string
+	if exists {
+		state = string(query.State)
+		sql = query.Template.SQL
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"queryId": queryID,
+		"state":   state,
+		"query":   sql,
+	})
 }
 
 func (m *MockPrestoServer) handleCancelQuery(w http.ResponseWriter, r *http.Request) {
