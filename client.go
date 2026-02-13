@@ -367,6 +367,11 @@ func (s *Session) Do(ctx context.Context, req *http.Request, v any) (*http.Respo
 	for attempt := 0; attempt < MaxRetryAttempts; attempt++ {
 		resp, err := s.client.httpClient.Do(req)
 		if err != nil {
+			// Bail out immediately if the context is done, even if the error
+			// itself looks like a retryable network error (e.g. signal interrupt).
+			if ctx.Err() != nil {
+				return nil, err
+			}
 			// Retry on transient network errors, but not on context cancellation
 			if !isRetryableNetError(err) {
 				return nil, err
@@ -378,7 +383,9 @@ func (s *Session) Do(ctx context.Context, req *http.Request, v any) (*http.Respo
 				req.Body, _ = req.GetBody()
 			}
 
-			time.Sleep(retryDelay)
+			if err := retrySleep(ctx, retryDelay); err != nil {
+				return nil, err
+			}
 			retryDelay *= 2
 			if retryDelay > MaxRetryDelay {
 				retryDelay = MaxRetryDelay
@@ -403,7 +410,9 @@ func (s *Session) Do(ctx context.Context, req *http.Request, v any) (*http.Respo
 				req.Body, _ = req.GetBody()
 			}
 
-			time.Sleep(retryDelay)
+			if err := retrySleep(ctx, retryDelay); err != nil {
+				return nil, err
+			}
 			retryDelay *= 2
 			if retryDelay > MaxRetryDelay {
 				retryDelay = MaxRetryDelay
@@ -416,6 +425,18 @@ func (s *Session) Do(ctx context.Context, req *http.Request, v any) (*http.Respo
 		return resp, fmt.Errorf("presto server error: %d: %s", resp.StatusCode, string(body))
 	}
 	return nil, fmt.Errorf("max retries exceeded")
+}
+
+// retrySleep waits for the given duration or until the context is cancelled.
+func retrySleep(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 // isRetryableNetError returns true for transient network errors that warrant
