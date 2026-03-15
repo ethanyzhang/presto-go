@@ -1,5 +1,7 @@
 # presto-go
 
+> **This project is now the official Presto Go client (v2) at [`prestodb/presto-go-client`](https://github.com/prestodb/presto-go-client).** See [RFC-0022](https://github.com/prestodb/rfcs/blob/main/RFC-0022-go-client-v2.md) for the design and motivation behind the rewrite.
+
 A Go client library for [Presto](https://prestodb.io/) and [Trino](https://trino.io/) SQL query engines.
 
 ## Features
